@@ -1,0 +1,297 @@
+---
+chapterNumber: "06"
+order: 6
+part: "part-1"
+title: "agent ステップ"
+summary: "agent.act で自然言語のゴールを渡し直後に expect で固定する原則、agent.assert・waitFor・extract の使い分け、agentContext による語彙指定、および e2e@0.25.0 のモデル・サブスクリプション設定を学びます。"
+modelRequirement: "required"
+estimatedMinutes: 30
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 05 章までを終えていること"
+  - "LLM モデル（サブスクリプションまたは API キー）が設定されていること"
+solutionFiles:
+  - filename: "billing-agent.e2e.ts"
+    lang: "ts"
+    sourcePath: "06-agent-steps/billing-agent.e2e.ts"
+---
+
+## この章で分かること
+
+- `agent.act('ゴール')` で、操作の手順ではなく**ゴール**を自然言語で渡し、モデルに画面を操作させる。
+- `act` の後に必ず `expect` で結果を**固定**する理由。1 ゴール 1 チェックの原則。
+- 画面について質問する `assert` / `waitFor` / `extract`。
+- モデルに語彙を教える `agentContext`、`context`、`system`。
+
+## 前提
+
+- [第 05 章](/chapters/05-app-and-browser/)までを終えていること。
+- **モデルが必要**です。ローカル学習では手持ちのサブスクリプションを 1 回サインインして使うか、API キーを設定します（詳細は[環境セットアップ](/setup/)または[公式 Subscriptions ガイド](https://e2e.com/docs/subscriptions)）。
+
+| サブスクリプション / プラン | サインインコマンド / 設定方法 | `e2e.config.ts` のインポート例 |
+| --- | --- | --- |
+| ChatGPT Plus / Pro | `npx e2e login openai` | `import { chatgpt } from 'e2e/oauth/chatgpt'` |
+| GitHub Copilot | `npx e2e login github-copilot` | `import { copilot } from 'e2e/oauth/copilot'` |
+| OpenCode Console（Zen / Go） | `npx e2e login opencode-console` | `import { opencodeConsole } from 'e2e/oauth/opencode-console'` |
+| SuperGrok / X Premium+ | `npx e2e login spacexsi` | `import { grok } from 'e2e/oauth/grok'` |
+| Claude Max / Team | プランの月次 API クレジットから API キーを発行（`ANTHROPIC_API_KEY`） | `import { anthropic } from '@ai-sdk/anthropic'` |
+
+このほか、Claude Code や Codex のログインをそのまま使う `@e2e-dev/acp`、あるいは Vercel AI Gateway や OpenRouter、ローカル LLM（OpenAI 互換エンドポイント）も選べます。
+
+ここでは ChatGPT サブスクリプションを例にします（他のプランでもテストコード自体はまったく同じです）。サインインが未完了だと `MODEL_PROVIDER_FAILED` で失敗します。
+
+```bash
+npx e2e login openai
+```
+
+## 一緒に書く
+
+### 1. モデルの設定を確認する
+
+`my-e2e-hands-on/e2e.config.ts` の `agents` を確認（未設定なら追加）します。
+
+```ts
+// e2e.config.ts（抜粋）
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { chatgpt } from 'e2e/oauth/chatgpt';
+import { gateway } from 'ai';
+
+const model = process.env.AI_GATEWAY_API_KEY
+  ? gateway('openai/gpt-6-luna-fast')
+  : chatgpt('gpt-6-luna');
+
+export default {
+  tests: ['tests/**/*.e2e.ts'],
+  trace: 'on',
+  targets: [{ engine: web(), app }],
+  agents: {
+    default: {
+      model,
+      system: 'You are a thorough QA agent. Verify every outcome on screen.',
+    },
+  },
+} satisfies E2EConfig;
+```
+
+- `model` が `agent.*` の呼び出しを処理するモデルです。ローカルでは ChatGPT サブスクリプション（`chatgpt(...)`）、`AI_GATEWAY_API_KEY` があれば API 経由（`gateway(...)`）に切り替わります。SuperGrok を使う場合は `npx e2e login spacexsi` のうえで `grok('grok-4')` を指定します。
+- `system` は「どう振る舞うか」の指示で、`act` のループだけが読みます。
+
+実行の先頭に出る `model chatgpt.responses/gpt-6-luna` が、この設定が読まれた印です。
+
+### 2. `act`: ゴールを 1 つ渡し、結果を固定する
+
+`tests/06-agent-steps/agent.e2e.ts` を作ります。モデルを使うテストには `agent` タグを付けます（[第 12 章](/chapters/12-ci-and-reporters/)で CI から除外するためです）。`zod` がまだ入っていなければ `npm install -D zod` を実行してください。
+
+```ts
+// tests/06-agent-steps/agent.e2e.ts
+import { describe, test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { z } from 'zod';
+
+// モデルを使うテストには agent タグを付ける（CI で除外できるように）
+describe('agent steps', { tags: ['agent'] }, () => {
+  test('act: one goal, then pin the outcome', async ({ app, agent, screen }) => {
+    await app.open('/todos');
+    const result = await agent.act('add a todo named {title}', { params: { title: 'Buy milk' } });
+    console.log('summary:', result.summary);
+    console.log('modelCalls:', result.modelCalls, 'actions:', result.actions, 'cache:', result.cache);
+    await expect(screen.getByRole('checkbox', 'Buy milk')).toBeVisible();
+    await expect(screen.getByRole('status')).toHaveText('1 remaining');
+  });
+});
+```
+
+```bash
+npx e2e run tests/06-agent-steps/agent.e2e.ts:7
+```
+
+```text
+   ✓ agent steps > act: one goal, then pin the outcome > agent.act "add a todo named {title}" 7.30s · 4 model calls
+stdout | |web| tests/06-agent-steps/agent.e2e.ts > agent steps > act: one goal, then pin the outcome
+summary: Added the todo “Buy milk.” The list now shows the item and the remaining count is 1.
+modelCalls: 4 actions: 2 cache: { mode: 'missed', reason: 'no-entry', ... }
+ ✓ |web| tests/06-agent-steps/agent.e2e.ts (1 test) 8.16s ai 18.2k tokens · 43% cached
+         AI  18.2k tokens · 43% cached · 4 model calls · chatgpt.responses/gpt-6-luna
+```
+
+**観察ポイント**
+
+- `agent.act` は、画面を読み、「入力欄に入れる」「ボタンを押す」という操作を自分で選び、ゴールに達したと判断したら戻ります。今回は 4 回モデルを呼び、2 つの操作をしました。
+- 値は `{title}` のように**プレースホルダ**にして `params` で渡します。文章に埋め込まない理由は[第 07 章](/chapters/07-replay-cache/)で分かります（キャッシュの鍵になります）。
+- `result.summary` はモデルが何をしたかの要約、`modelCalls` と `actions` が費やした量です。
+- 出力の最後に、このテストが使ったトークン数が出ます。`act` 1 回で 18,000 トークン程度です。費用の感覚を持ってください。
+
+`trace.md` を開くと、モデルが選んだ操作が 1 行ずつ残っています。
+
+```text
+2. ✓ `agent.act` "add a todo named {title}" (7.3s, 4 model calls)
+   - type "Buy milk" into textbox "New todo" (62ms)
+   - tap button "Add" (88ms)
+   - screen: 21 changes since step 1 ...
+3. ✓ `expect.toBeVisible` `getByRole("checkbox", name: "Buy milk")` (11ms)
+4. ✓ `expect.toHaveText` `getByRole("status")` (3ms)
+```
+
+モデルが見ているのは[第 02 章](/chapters/02-locators/)の「ロールと名前の木」です。HTML も cookie も見ていません。だからモデルも `textbox "New todo"`、`button "Add"` という言葉で操作しています。
+
+**なぜ `act` の後に `expect` を書くのか**。`act` が「できた」と言っても、それはモデルの判断です。`expect` は画面の事実です。この `expect` が通ったときに初めて、`act` の操作が**録画**されます（[第 07 章](/chapters/07-replay-cache/)）。`expect` の無い `act` は毎回モデルを呼びます。
+
+### 3. 2 つのゴールは 2 回の `act`
+
+```ts
+  test('two goals are two act calls', async ({ app, agent, screen }) => {
+    await app.open('/todos');
+    await agent.act('add a todo named {title}', { params: { title: 'Walk the dog' } });
+    await expect(screen.getByRole('status')).toHaveText('1 remaining');
+    await agent.act('mark the "Walk the dog" todo as done');
+    await expect(screen.getByRole('checkbox', 'Walk the dog')).toBeChecked();
+    await expect(screen.getByRole('status')).toHaveText('0 remaining');
+  });
+```
+
+「todo を追加して完了にする」と 1 つの `act` に書きたくなりますが、分けます。
+
+- 確認したい結果が 2 つあるなら、ゴールも 2 つです。間に `expect` を挟むことで、どちらで壊れたかが分かります。
+- 第 07 章の録画もゴール単位です。1 つ目が通れば、2 つ目を直している間、1 つ目はモデルを呼ばずに再生されます。
+
+逆に、「入力欄までスクロールする」「バナーを閉じる」のような**途中の手順**はゴールではありません。モデルが自分で見つけます。書くのは結果だけです。
+
+### 4. `assert`、`waitFor`、`extract`: 画面について質問する
+
+```ts
+  test('assert: one question about the screen', async ({ app, agent, screen }) => {
+    await app.open('/todos');
+    await screen.getByLabel('New todo').fill('Write the report');
+    await screen.getByRole('button', 'Add').tap();
+    await expect(screen.getByRole('status')).toHaveText('1 remaining');
+    await agent.assert('there is exactly one todo and it is not done yet');
+  });
+
+  test('waitFor: a condition that takes time', async ({ app, agent }) => {
+    await app.open('/slow');
+    await agent.waitFor('a heading that says "Loaded" is on the screen', { interval: 500 });
+  });
+
+  test('extract: structured data from the screen', async ({ app, agent, screen }) => {
+    await app.open('/todos');
+    for (const title of ['Buy milk', 'Walk the dog']) {
+      await screen.getByLabel('New todo').fill(title);
+      await screen.getByRole('button', 'Add').tap();
+    }
+    await expect(screen.getByRole('status')).toHaveText('2 remaining');
+    const data = await agent.extract('every todo title, and how many remain', {
+      schema: z.object({ titles: z.array(z.string()), remaining: z.number().int() }),
+    });
+    expect(data.titles).toEqual(['Buy milk', 'Walk the dog']);
+    expect(data.remaining).toBe(2);
+  });
+```
+
+| 呼び出し | 何をするか | モデル呼び出し | 待つか |
+| --- | --- | --- | --- |
+| `act('ゴール')` | 操作してゴールに到達する | 最大 25 回 | 操作が終わるまで |
+| `assert('主張')` | 今の画面で主張が正しいか判定する | 既定は 1 回（+ 修正 1 回） | 待たない |
+| `waitFor('条件')` | 条件が成り立つまで画面を見直す | 画面が変わるたび | 既定 30 秒まで |
+| `extract('何を', { schema })` | 画面から構造化データを読む | 1 回（+ 修正 1 回） | 待たない |
+
+**観察ポイント**
+
+- `assert` は**待ちません**。「まだ出ていない」なら失敗です。画面が整ってから呼んでください（上の例では `expect` で整えてから呼んでいます）。
+- `assert` の主張が画面から判断できない（必要な情報が無い）ときは `ASSERTION_INCONCLUSIVE` で失敗します。「画面にあるもの」について聞いてください。
+- `assert` に `{ explore: true }` を明示すると、スクロールして複数ビューポートから情報を集めて判定できます（既定上限はスクロール 10 回・モデル呼び出し 6 回）。ただし要素をクリックして状態を変える操作や、時間経過を待つ用途ではありません。場所や値を厳密に決められる場合は引き続き `expect` を使います。
+- `waitFor` は `sleep` の代わりです。画面が変わらない間はモデルを呼ばないので、無駄に費用がかかりません。
+- `extract` は Zod などの Standard Schema v1 で形を指定します。モデルが返した値はスキーマで検証され、型付きで返ります。画面に無いデータは `""` や `0` でごまかさず、`ASSERTION_INCONCLUSIVE` になります。
+
+`assert` / `waitFor` / `extract` は第 07 章のキャッシュに**乗りません**。毎回モデルを呼びます。厳密に判定できることは `expect` で書き、モデルの判断が要るところだけに使ってください。「値が 1 remaining か」は `expect`、「todo が 1 つだけで未完了に見えるか」のような画面全体の読み取りは `assert`、という分け方です。
+
+### 5. 語彙を教える: `agentContext`
+
+モデルが迷いそうな言葉は、先に説明しておきます。
+
+```ts
+describe('vocabulary for the agent', {
+  tags: ['agent'],
+  agentContext: 'On the Ambiguous page, "the draft" is the item under the Drafts heading and "the post" is the item under Published.',
+}, () => {
+  test('agentContext explains what the screen calls things', async ({ app, agent, screen }) => {
+    await app.open('/ambiguous');
+    await agent.act('delete the post, not the draft');
+    await expect(screen.getByRole('status')).toHaveText('Deleted the published post');
+  });
+});
+```
+
+| 置き場所 | 内容 | 誰が読むか |
+| --- | --- | --- |
+| `agents.<name>.system`（config） | どう振る舞うか。慎重さ、やってはいけないこと、ダイアログの扱い | `act` のループだけ |
+| `agents.<name>.context`（config） | このアプリでは何を何と呼ぶか。画面名、メニューの場所、用語 | すべてのモデル呼び出し（`assert` などの判定も） |
+| `agentContext`（テストや `describe`） | そのテストだけが知っている事実。seed データの名前など | そのテストのすべてのモデル呼び出し |
+
+目安は「どのテスターにも当てはまるアプリの事実は `context`、どのアプリでも当てはまるテスターの流儀は `system`」です。`agentContext` に判定ルールを書かないでください。判定側も読むので、「〜なら合格にしてよい」のような文は判定を甘くします。
+
+ゴールの書き方の原則をまとめます。
+
+- **画面に出ている言葉を使う**。"Add" ボタンがあるなら "add"、"Upgrade to Pro" なら "upgrade to Pro"。
+- **1 ゴール = 1 つの結果**。結果が 2 つならゴールも 2 つ。
+- **値は `params`**。文章に埋めない。
+- **手順を書かない**。「スクロールして」「少し待って」は要らない。
+- **直後に `expect`**。モデルの判断ではなく画面の事実で固定する。
+
+### 完成形
+
+```bash
+npx e2e run tests/06-agent-steps
+```
+
+```text
+ ✓ |web| tests/06-agent-steps/agent.e2e.ts (6 tests) 37.26s ai 62.9k tokens · 45% cached
+      Tests  6 passed (6)
+         AI  62.9k tokens · 45% cached · 17 model calls · chatgpt.responses/gpt-6-luna
+      Cache  4 missed
+```
+
+初回は 17 回のモデル呼び出し、約 63,000 トークンです。`Cache 4 missed` は「4 つの `act` に録画が無かった（今回録画した）」という意味です。もう一度実行してみてください。[第 07 章](/chapters/07-replay-cache/)の話が先に見えます。
+
+## 読む
+
+- [Agent steps ガイド](https://e2e.com/docs/agent-steps): モデルが何を見て、何ができて、どう終わるか。
+- [agent リファレンス](https://e2e.com/docs/reference/agent): 「agent.act」「agent.assert」「agent.waitFor」「agent.extract」「Budgets」。
+- [Agents and personas](https://e2e.com/docs/agents): 名前付き agent と `--agent` の使い分け。
+- [Subscriptions](https://e2e.com/docs/subscriptions) と [Models](https://e2e.com/docs/models): 各種サブスクリプション（`openai`、`github-copilot`、`opencode-console`、`spacexsi`）や API プロバイダの設定。
+- オフライン参照・CLI 補足: `node_modules/e2e/docs/reference/agent.mdx` や `npx e2e guide agent` も参照できます。
+
+## 自分の言葉で書き直す
+
+`tests/06-agent-steps/billing-agent.e2e.ts` を作り、次を満たすテストを書いてください。
+
+1. `{ session: 'alice', tags: ['agent'] }` で `/settings/billing` を開く（セッション保存は[第 09 章](/chapters/09-authentication/)で作ります。第 09 章をまだ終えていない場合は、テスト冒頭で `/login` から `alice` / `password123` でサインインして `/settings/billing` へ進んでも構いません）。
+2. `agent.act` で Pro プランにアップグレードする（確認ダイアログが出ます。結果は「Pro になる」の 1 つなので 1 ゴールです）。
+3. `expect` で `status` に "Pro" が含まれることを固定する。
+4. `agent.assert` で「現在のプランとして Pro が表示されている」ことを判定する。
+5. アップグレードのボタンが消えたことを `expect(...).toBeHidden()` で確認する。
+
+手順 5 を `agent.assert('there is no longer a button to upgrade')` と書くとどうなるか試してください。「無いこと」は画面の一部しか見えていない可能性があるため、モデルは断定できず `ASSERTION_INCONCLUSIVE` になりやすいです。**無いことの確認は `expect`**、あることの読み取りは `assert`、と覚えてください。
+
+詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `MODEL_PROVIDER_FAILED` | サブスクリプション未ログイン、または API キー未設定 | `npx e2e login openai`（利用プロバイダに合わせて `github-copilot` / `opencode-console` / `spacexsi`）または環境変数を確認 |
+| `MODEL_UNAVAILABLE` | config に `agents.default.model` が無い | `e2e.config.ts` にモデルを設定する |
+| `ACTION_FAILED` で `act` | モデルがゴールに達せなかった | ゴールの言葉を画面の言葉に直す。`--debug` で何を見て何を試したか確認（[第 08 章](/chapters/08-debugging/)） |
+| `ASSERTION_INCONCLUSIVE` | 画面に判断材料が無い | 先に `expect` で画面を整える。画像が要るなら `vision: true` |
+| `STEP_BUDGET_EXHAUSTED` / `STEP_TIMEOUT` | ゴールが大きすぎる | ゴールを分ける |
+| `act` が毎回遅い | `expect` が無くて録画されない | 直後に `expect` を置く（[第 07 章](/chapters/07-replay-cache/)） |
+
+## まとめ
+
+- `act` はゴールを渡す。画面の言葉で、1 ゴール 1 結果、値は `params`、直後に `expect`。
+- `assert` / `waitFor` / `extract` は画面への質問。待つのは `waitFor` だけ。キャッシュに乗らない。
+- 語彙は `context` / `agentContext`、振る舞いは `system`。
+- 費用はトークンで見える。`act` 1 回で数万トークン。
+
+次の[第 07 章: リプレイキャッシュ](/chapters/07-replay-cache/)では、同じテストをもう一度走らせると何が起きるか（録画と再生）と、費用の抑え方を扱います。

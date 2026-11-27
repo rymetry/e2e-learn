@@ -1,0 +1,229 @@
+---
+import { Code } from 'astro-expressive-code/components';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const initCommand = `mkdir my-e2e-hands-on
+cd my-e2e-hands-on
+npx e2e@latest init`;
+
+const configTemplate = `import { web } from '@e2e-dev/web';
+import { defineConfig } from 'e2e';
+
+const PUBLIC_APP_URL = 'https://test-automation-practice-app.rymetry.workers.dev';
+const appDir = process.env.APP_DIR;
+
+const app = appDir
+  ? {
+      url: process.env.APP_URL ?? 'http://localhost:3000',
+      command: {
+        executable: 'npm',
+        args: ['run', 'dev'],
+        cwd: appDir,
+        log: '.e2e/logs/app.log',
+        reuseExisting: true,
+      },
+    }
+  : {
+      url: process.env.APP_URL ?? PUBLIC_APP_URL,
+    };
+
+export default defineConfig({
+  tests: ['tests/**/*.e2e.ts'],
+  trace: 'on',
+  targets: [{ engine: web(), app }],
+});`;
+
+const smokeTest = `import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('公開練習用アプリが開ける', async ({ app, screen }) => {
+  await app.open('/');
+  await expect(screen.getByRole('heading', { level: 1 })).toBeVisible();
+});`;
+
+const runCommand = `npx e2e run tests/01-setup-and-first-run`;
+
+const expectedOutput = ` RUN  e2e v0.25.0 /path/to/my-e2e-hands-on
+      run 01a185cd-... · targets: web
+
+ ✓ |web| tests/01-setup-and-first-run/smoke.e2e.ts (1 test) 954ms
+   ✓ 公開練習用アプリが開ける 954ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Duration  1.45s
+     Traces  .e2e/results/ (1 page, trace.md in each test's directory)`;
+
+const authCommands = `# 方法 1: サブスクリプション認証（openai / github-copilot / opencode-console / spacexsi）
+npx e2e login openai
+
+# 方法 2: API キー設定（Anthropic / Google / AI Gateway 等）
+export AI_GATEWAY_API_KEY="your-api-key"`;
+---
+
+<BaseLayout
+  title="環境セットアップ"
+  description="my-e2e-hands-on/ を 3 ステップで構築し、e2e 0.25.0 と公開練習用アプリで最初のテストを緑にするセットアップガイド。"
+  isHome={false}
+>
+  <div class="setup-page lab-container">
+    <header class="setup-header">
+      <h1 class="setup-h1">環境セットアップ</h1>
+      <div class="setup-meta-row tabular-nums">
+        <span>所要時間 約 10 分</span>
+        <span class="meta-sep" aria-hidden="true">/</span>
+        <span>第 05 章までモデル不要</span>
+        <span class="meta-sep" aria-hidden="true">/</span>
+        <span class="meta-mono">e2e 0.25.0 · @e2e-dev/web 0.17.0</span>
+      </div>
+    </header>
+
+    <div class="chapter-prose">
+      <p>
+        このハンズオンでは、既存リポジトリを clone する代わりに、自分の作業ディレクトリ
+        <code>my-e2e-hands-on/</code> を 3 ステップで構築して進めます。TypeScript
+        の基礎から確認したい方は先に
+        <a href="/chapters/00-typescript-basics/">第 00 章（TypeScript の最小基礎）</a>
+        を読んでから戻ってきてください。
+      </p>
+
+      <h2>ステップ 1: 動作要件の確認とプロジェクト初期化</h2>
+      <p>
+        <code>e2e@0.25.0</code> は <strong>Node.js 24.8 以上</strong>（または
+        <strong>22.22.3 以上</strong>）で動作します。Web テストのみを実行する場合は
+        <strong>Bun 1.4.3 以上</strong> も利用できます。
+      </p>
+      <p>
+        空のディレクトリ <code>my-e2e-hands-on/</code> を作成し、初期化ウィザードを実行します。第 05
+        章までは AI モデルを使わないため、モデル設定の質問では
+        <strong>Skip for now</strong> を選んでください（Next.js
+        プロジェクト内では自動でフレームワーク設定も検出されます）。
+      </p>
+
+      <Code code={initCommand} lang="bash" title="ターミナル" />
+
+      <h2>ステップ 2: e2e.config.ts を 3 接続モード対応テンプレートに整える</h2>
+      <p>
+        生成された <code>e2e.config.ts</code> を以下の内容へ置き換えます。既定では公開練習用アプリ（
+        <a
+          href="https://test-automation-practice-app.rymetry.workers.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          test-automation-practice-app.rymetry.workers.dev
+        </a>
+        ）へ接続し、環境変数 <code>APP_URL</code> または <code>APP_DIR</code> を渡すだけで接続先を切り替えられます。
+      </p>
+
+      <Code code={configTemplate} lang="ts" title="my-e2e-hands-on/e2e.config.ts" />
+
+      <table>
+        <thead>
+          <tr>
+            <th>接続モード</th>
+            <th>実行時の指定例</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>公開練習用アプリ（既定）</td>
+            <td><code>npx e2e run</code></td>
+            <td>準備ゼロですぐに全章を実行したいとき</td>
+          </tr>
+          <tr>
+            <td>任意の URL へ接続</td>
+            <td><code>APP_URL=http://localhost:3000 npx e2e run</code></td>
+            <td>起動済みローカルサーバーや検証環境へ向けたいとき</td>
+          </tr>
+          <tr>
+            <td>ローカルアプリを自動起動</td>
+            <td><code>APP_DIR=../practice-app npx e2e run</code></td>
+            <td>e2e からアプリ起動と終了をまとめて管理したいとき</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>ステップ 3: 最初のスモークテストを実行する</h2>
+      <p>
+        <code>tests/01-setup-and-first-run/smoke.e2e.ts</code> を作成し、公開練習用アプリの見出しが表示されることを確認します。
+      </p>
+
+      <Code code={smokeTest} lang="ts" title="my-e2e-hands-on/tests/01-setup-and-first-run/smoke.e2e.ts" />
+      <Code code={runCommand} lang="bash" title="ターミナル" />
+
+      <p>次のように <code>1 passed</code> が表示されれば初期セットアップは完了です。</p>
+      <Code code={expectedOutput} lang="text" title="期待される出力" />
+
+      <h2>第 06 章以降で使う AI モデル認証（今すぐ設定しなくて大丈夫です）</h2>
+      <p>
+        第 06 章（AI Agent ステップ）に進むタイミングで、サブスクリプションログインまたは
+        <code>AI_GATEWAY_API_KEY</code> のどちらかを設定します。
+      </p>
+      <Code code={authCommands} lang="bash" title="第 06 章以降での認証設定" />
+
+      <p>
+        もし <code>NODE_UNSUPPORTED</code> や <code>APP_UNREACHABLE</code> などのエラーが出た場合は
+        <a href="/errors/">エラーコード逆引き</a> を確認してください。
+      </p>
+    </div>
+
+    <nav class="setup-next-nav" aria-label="次のステップ">
+      <a href="/chapters/00-typescript-basics/" class="lab-link">← 第 00 章（TypeScript の基礎）を見る</a>
+      <a href="/chapters/01-setup-and-first-run/" class="lab-cta">第 01 章へ進む →</a>
+    </nav>
+  </div>
+</BaseLayout>
+
+<style>
+  .setup-page {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+  }
+
+  .setup-header {
+    max-width: 65ch;
+    margin-bottom: 2rem;
+  }
+
+  .setup-h1 {
+    margin: 0 0 0.875rem;
+    font-size: clamp(1.75rem, 3.2vw, 2.25rem);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: var(--text-primary);
+  }
+
+  .setup-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    padding-block: 0.625rem;
+    border-top: 1px solid var(--border-hairline);
+    border-bottom: 1px solid var(--border-hairline);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .meta-sep {
+    color: var(--border-hairline);
+  }
+
+  .meta-mono {
+    font-family: var(--font-mono);
+  }
+
+  .setup-next-nav {
+    margin-top: 2.75rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border-hairline);
+    max-width: 65ch;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+</style>

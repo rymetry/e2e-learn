@@ -1,0 +1,303 @@
+---
+chapterNumber: "12"
+order: 12
+part: "part-1"
+title: "CI とレポーター"
+summary: "CI モードの挙動、タグ・シャードによる絞り込み、新レポーター群（dot / line / ctrf / htmlReporter）、e2e report / merge-reports、GitHub Actions や Vercel Previews 連携を学びます。"
+modelRequirement: "optional"
+estimatedMinutes: 35
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "11-page-objects-and-visual"
+solutionFiles: []
+---
+
+## この章で分かること
+
+- `CI` 環境変数が何を変えるか（再試行、並列数、キャッシュのモード、`.only` の扱い）。
+- タグとフィルタ、シャードで「CI で走らせるもの」を選ぶ（`--tag`、`--exclude-tag`、`--grep`、`--target`、`--last-failed`、`--shard`）。
+- 最新レポーター群（`list`、`dot`、`line`、`json`、`junit`、`markdown`、`ctrf`、`@e2e-dev/github`、`@e2e-dev/html-reporter`）、stdout / stderr 分離、`e2e/reporters` ファクトリ、`e2e report`、`e2e merge-reports`。
+- `e2e init --ci` によるワークフロー自動生成、GitHub Actions の書き方、Vercel Previews 連携。
+
+## 前提
+
+- 第 11 章までを終えていること。
+- ローカルの手順にモデルは不要です。GitHub 上で `agent` タグのテストまで走らせるのは任意で、Vercel AI Gateway などの API キーが要ります。
+
+## 一緒に書く
+
+この章にテストファイルはありません。これまで作ったテストを CI で動かし、レポーターや並列実行を設定します。
+
+### 1. CI モードを手元で見る
+
+`CI` 環境変数に空文字・`0`・`false` 以外の値が入っていると、e2e は CI モードになります。
+
+```bash
+CI=1 npx e2e run tests/04-test-structure/fixtures.e2e.ts
+```
+
+```text
+      run 01a185f5-… · targets: web · CI
+```
+
+**観察ポイント**: ヘッダーに `· CI` が付きます。変わるのは次の 5 つです。
+
+| 設定 | ローカル | CI |
+| --- | --- | --- |
+| `retries` | `0` | `1`（失敗したテストを 1 回やり直す） |
+| `workers` | コア数の半分 | `1` |
+| `cache`（未設定のとき） | `read-write` | `read-only`（再生はするが録画しない） |
+| `test.only` | 許可 | `ONLY_IN_CI` で失敗 |
+| `command.reuseExisting` | 有効 | 無視（通知が出る） |
+
+再試行が 1 回入るので、CI で「1 回目は失敗、2 回目で通った」テストは `flaky` として報告されます。`--retries 0` や `--workers 4` で上書きできます。
+
+### 2. 走らせるテストを選ぶ
+
+これまでのテストは 3 種類に分かれています。タグが付いていないもの、`agent`（モデルが要る）、`visual`（macOS で撮った基準画像を使う）。CI（Linux）で素直に走るのは 1 つ目だけです。
+
+```bash
+npx e2e list --exclude-tag agent --exclude-tag visual
+npx e2e list --tag agent
+```
+
+`e2e list` は実行せずに「どのテストが選ばれるか」を表示します。フィルタの確認に使います。
+
+| フィルタ | 意味 |
+| --- | --- |
+| `--tag a,b` | `a` か `b` を持つテストだけ（`--tag-mode all` で両方を持つもの） |
+| `--exclude-tag a` | `a` を持つテストを除く |
+| `--grep "パターン"` | テスト名（describe を含む）が正規表現に一致 |
+| `--target web` | ターゲットで絞る |
+| `--last-failed` | 前回の `report.json` で失敗したものだけ |
+| `--shard 1/3` | テスト群を 3 分割した 1 番目だけ（`--pass-with-no-tests` と併用） |
+| ファイル / ディレクトリ / `ファイル:行` | 位置で絞る |
+
+タグは `test` と `describe` のオプションで付けます（第 04 章）。第 06 章から agent を使うテストに必ず `tags: ['agent']` を付けてきたのは、ここで除外するためです。
+
+### 3. レポーターと stdout / stderr 分離
+
+結果の出力先を**レポーター**と呼びます。
+
+```bash
+npx e2e run tests/04-test-structure/fixtures.e2e.ts --reporter list,junit,markdown,ctrf
+```
+
+```text
+      Tests  2 passed (2)
+      JUnit  .e2e/junit.xml
+   Markdown  .e2e/summary.md
+       CTRF  .e2e/ctrf.json
+```
+
+`e2e@0.25.0` で使える標準レポーターと公式レポーターパッケージの一覧です。
+
+| レポーター | 出力先 | 用途 |
+| --- | --- | --- |
+| `list` | 端末（既定・インタラクティブ） | 人が進捗と詳細を読む |
+| `dot` | 端末（インタラクティブ） | 1 テスト 1 文字（`.` / `~` / `F` / `T` / `I` / `-`）のコンパクト表示 |
+| `line` | 端末（インタラクティブ） | 1 行進捗（`[3/12] ...`）＋失敗をその場で出力 |
+| `json` | 標準出力に `report.json` の中身 | スクリプト・パイプ処理向け |
+| `junit` | `.e2e/junit.xml` | CI サービスのテスト結果ビュー連携（GitLab は失敗スクショも自動リンク） |
+| `markdown` | `.e2e/summary.md` | ジョブサマリーやチャット通知向け |
+| `ctrf` | `.e2e/ctrf.json` | Common Test Report Format 0.3.0 準拠（CTRF 対応ツール向け） |
+| `github()`（`@e2e-dev/github`） | PR コメントとジョブサマリー | GitHub Actions 向け（ローカルでは何もしない） |
+| `htmlReporter()`（`@e2e-dev/html-reporter`） | `.e2e/report.html` | ブラウザで見る対話的な HTML レポート（動画・トレース・プロンプトコピー付き） |
+
+#### stdout / stderr 分離と `--reporter list,json` の併用
+
+`e2e@0.25.0` では出力ストリームの契約が整理されました。
+
+- **`--reporter list,json`（や `dot,json`、`line,json`）が併用可能**になりました。`json` と並べた場合、インタラクティブレポーター（`list` / `dot` / `line`）は自動的に `stderr` に出力を逃がすため、`stdout` には純粋な JSON ドキュメントだけが出ます。
+- インタラクティブレポーターが無い場合（例: `--reporter json` のみ）、テスト内の `console.log` や config 読み込み時の出力はすべて `stderr` に出ます。
+- なお、`list` と `dot` のように**インタラクティブレポーターを 2 つ同時に指定**したり、`json` と並べつつ `list({ stream: 'stdout' })` を明示したりすると `INVALID_CONFIG` になります。
+
+```bash
+# stdout を jq にパイプしつつ、進捗は stderr に表示する
+npx e2e run tests/04-test-structure/fixtures.e2e.ts --reporter list,json | jq '.run.summary'
+```
+
+#### ファクトリでオプションを渡す（`e2e/reporters`）と HTML レポート（`e2e report`）
+
+標準レポーターに出力先などのオプションを渡すときは、`e2e/reporters` からファクトリ関数をインポートして `e2e.config.ts` に書きます。また、ブラウザでステップや動画を確認したいときは `@e2e-dev/html-reporter` を追加します。
+
+```ts
+// e2e.config.ts（抜粋）
+import { junit, ctrf, list } from 'e2e/reporters';
+import { github } from '@e2e-dev/github';
+import { htmlReporter } from '@e2e-dev/html-reporter';
+
+export default {
+  // ...
+  reporters: [
+    list(),
+    junit({ outputFile: 'reports/junit.xml' }),
+    ctrf({ outputFile: 'reports/ctrf.json' }),
+    htmlReporter({ media: 'link' }), // 'link'（既定）| 'embed'（1ファイル完結）| 'none'
+    github(),
+  ],
+};
+```
+
+`htmlReporter()` が生成した `.e2e/report.html` は、次のコマンドでそのまま既定のブラウザに開けます。
+
+```bash
+npx e2e report
+# 出力先を変えている場合
+npx e2e report reports/custom.html
+npx e2e report --output .e2e/merged
+```
+
+HTML レポートでは、失敗箇所のコード抜粋、動画タイムラインとステップの同期再生、コーディングエージェントにそのまま貼れる「copy prompt」ボタンが使えます。
+
+### 4. シャード並列と `e2e merge-reports`
+
+テスト数が増えたら、CI のマトリクスで `--shard` を使って複数ジョブに分割し、最終ジョブで `e2e merge-reports` を使って 1 つのレポートへ統合できます。
+
+```bash
+# 各シャードジョブ
+npx e2e run --shard 1/3 --pass-with-no-tests --output .e2e/shard-1
+npx e2e run --shard 2/3 --pass-with-no-tests --output .e2e/shard-2
+npx e2e run --shard 3/3 --pass-with-no-tests --output .e2e/shard-3
+
+# 全シャードの成果物を集めた最終ジョブでマージ
+npx e2e merge-reports .e2e/shard-* --output .e2e/merged --reporter junit,markdown,ctrf
+```
+
+マージジョブ側にだけ `github()` レポーターを置けば、分割実行した全シャードの結果を 1 つの PR コメントにまとめて投稿できます。
+
+### 5. ワークフローを書く（または `e2e init --ci` で生成する）
+
+`e2e@0.25.0` では、`npx e2e init --ci github-actions`（または `--ci gitlab`）を実行すると、現在の `e2e.config.ts` とパッケージマネージャに合わせた CI ワークフローを自動生成してくれます。
+
+手書きする場合の `.github/workflows/e2e.yml` の例です。
+
+```yaml
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write # @e2e-dev/github が PR にコメントするため
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Install browsers
+        run: npx e2e-web install chromium --with-deps
+
+      - name: Decide which tags to leave out
+        id: tags
+        env:
+          HAS_MODEL_KEY: ${{ secrets.AI_GATEWAY_API_KEY != '' }}
+        run: |
+          flags="--exclude-tag visual"
+          if [ "$HAS_MODEL_KEY" != "true" ]; then
+            flags="$flags --exclude-tag agent"
+          fi
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+
+      - name: Run e2e
+        run: npx e2e run --reporter list,junit ${{ steps.tags.outputs.flags }}
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+
+      - name: Upload artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: .e2e/results
+          retention-days: 7
+```
+
+**観察ポイント**
+
+- **アプリの起動が無い**。練習用アプリは公開 URL なので、config の既定のままで届きます。自分のアプリなら、ここで `app.command` で起動するか、ステージング／プレビューの `APP_URL` を渡します。
+- **ブラウザのインストール**。`npx e2e-web install chromium --with-deps` が、エンジンが要求する版の Chromium と OS のライブラリを入れます。
+- **タグの除外を Secrets の有無で切り替える**。`AI_GATEWAY_API_KEY` が無ければ `--exclude-tag agent` を足します。モデル無しでも緑になる、が既定です。
+- **成果物を必ず上げる**。`if: ${{ !cancelled() }}` で、失敗したときも `.e2e/results`（`trace.md`、スクリーンショット）を残します。失敗の調査は第 08 章と同じ手順で、ダウンロードした `trace.md` を読みます。
+
+### 6. GitHub で動かす・Vercel Previews 連携（任意）
+
+自分のリポジトリを GitHub に push すると、このワークフローが動きます。
+
+1. push すると `Actions` タブに `e2e` が現れ、タグ無しのテストだけが走って緑になります。
+2. `agent` タグのテストも走らせたいなら、Vercel AI Gateway で API キーを作り、リポジトリの Secrets に `AI_GATEWAY_API_KEY` として登録します。
+3. `.e2e/cache/` をコミットしてあれば、CI は `read-only` で録画を再生し、`act` にモデルを使いません。再生できなくなった録画で費用がかかり続けるのを防ぐには、`--strict-cache` を足し、`REPLAY_STALE` で失敗させます（第 07 章）。
+4. PR を作ると、`@e2e-dev/github` が結果のコメントを付け、再実行で同じコメントを更新します。
+
+また、アプリを Vercel にデプロイしている場合は、公式の [Vercel Previews ガイド](https://e2e.com/docs/ci/vercel-previews) の手順で `repository_dispatch`（`vercel.deployment.ready`）をトリガーにし、プレビュー URL に対してテストを流したり、本番リリースを Deployment Check でゲートしたりできます。
+
+秘密情報の注意です。モデルのキーを渡したジョブは、そのキーをテストと依存パッケージの全コードに渡しています。fork からの PR には GitHub が Secrets を渡さないので、既定の設定なら外部の PR で鍵が漏れることはありませんが、信頼できないブランチのコードに鍵を渡さないでください。
+
+### 7. 変更に関係するテストだけ走らせる（紹介のみ）
+
+`--changed-since origin/main` と `@e2e-dev/decision` の「decision filter」を組み合わせると、変更に影響されないテストをモデルの判断で省けます。設定の詳細は [Test filters](https://e2e.com/docs/filters) を読んでください。
+
+## 読む
+
+- [Continuous integration](https://e2e.com/docs/ci)（公式ドキュメント）: 「Upload the reports」「Model credentials」「What CI changes」「Sharding」。
+- [GitHub Actions](https://e2e.com/docs/ci/github-actions): 「Web」のワークフロー全文。
+- [Vercel Previews](https://e2e.com/docs/ci/vercel-previews): プレビュー環境テストと本番ゲート。
+- [Reporters リファレンス](https://e2e.com/docs/reference/reporters): 「Built-in reporters」（`dot`、`line`、`ctrf`、`htmlReporter()`、stdout/stderr 契約）。
+- [Pull request comments](https://e2e.com/docs/github): `@e2e-dev/github` の設定と PR コメントの形。
+- [CLI リファレンス](https://e2e.com/docs/reference/cli): `e2e init --ci`、`e2e report`、`e2e merge-reports`。
+- オフライン補足: `npx e2e guide running`。
+
+## 自分の言葉で書き直す
+
+手元のメモに次の 3 点を書き出してください。
+
+1. 自分の実務のアプリを CI で動かすとしたら、`Run e2e` の前に何が要るか（アプリのビルド・起動、DB、環境変数、プレビュー URL など）。
+2. `agent` タグのテストを CI で走らせるか、走らせないか。走らせるなら、キー・キャッシュ（`--strict-cache`）・費用をどう管理するか。
+3. `visual` タグのテストの基準画像を CI 用にどう作るか（第 11 章の 2 案のどちらか）と、どのレポーター（`junit` / `ctrf` / `htmlReporter()` / `github()`）を採用するか。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `ONLY_IN_CI` | `test.only` が残っている | 消す |
+| `INVALID_CONFIG`（reporters） | `list` と `dot` などインタラクティブレポーターを複数指定した、または `junit` を関数呼び出しせず渡した | インタラクティブは 1 つまで。ファクトリは `junit()` のように呼ぶ |
+| CI で `MODEL_UNAVAILABLE` / `MODEL_PROVIDER_FAILED` | キーが無いのに agent テストが選ばれた | `--exclude-tag agent`、または Secrets を登録 |
+| CI で `toHaveScreenshot` が失敗 | 基準画像が別 OS | `--exclude-tag visual`、または CI 上で作る |
+| `BROWSER_INSTALL_FAILED` | ブラウザのインストール手順が無い | `npx e2e-web install chromium --with-deps` |
+| `APP_ALREADY_RUNNING` | CI は `reuseExisting` を無視する | CI では自分で起動したプロセスを残さない |
+| 失敗したのに成果物が無い | `if: ${{ !cancelled() }}` が無い | upload ステップに付ける |
+
+## まとめ
+
+- `CI=1` で再試行 1、並列 1、キャッシュ `read-only`、`.only` 禁止、`reuseExisting` 無視。
+- タグやシャードで CI の対象を選ぶ。`e2e list` で事前に確認し、シャード結果は `e2e merge-reports` で統合できる。
+- `--reporter list,json` の併用が可能になり、`dot`・`line`・`ctrf`・`htmlReporter()`（`npx e2e report`）など用途別のレポーターを選べる。
+- ワークフローは `e2e init --ci` で生成でき、GitHub Actions や Vercel Previews と連携できる。
+
+次の第 13 章では、テストを書かずにゴールだけ渡してアプリを探索させる `e2e explore` と、PR 差分を狙う `--changed-since` を扱います。

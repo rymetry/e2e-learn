@@ -1,0 +1,291 @@
+---
+chapterNumber: "05"
+order: 5
+part: "part-1"
+title: "app と browser"
+summary: "app フィクスチャのライフサイクル操作、browser フィクスチャの evaluate・URL フィルタ付き cookies()・ビューポート・ダークモード・route モック・waitForResponse、および web() と app ターゲット設定を学びます。"
+modelRequirement: "none"
+estimatedMinutes: 25
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 04 章を終えていること"
+solutionFiles:
+  - filename: "mock-me.e2e.ts"
+    lang: "ts"
+    sourcePath: "05-app-and-browser/mock-me.e2e.ts"
+---
+
+## この章で分かること
+
+- `app` フィクスチャ: ページを開く、戻る、ブラウザを作り直す、状態を消す、スクリーンショットを撮る。
+- `browser` フィクスチャ: ページから値を読む、URL 指定で絞り込める `cookies()`、ビューポートとダークモード、API のモック、レスポンス・リクエスト待ち。
+- config の `web()` オプションと、アプリを「どこで動かすか」（公開 URL / `APP_URL` / `APP_DIR`）の切り替え。
+
+## 前提
+
+- [第 04 章](/chapters/04-test-structure/)を終えていること。
+- モデルは不要です。`APP_DIR` の節だけ、練習用アプリを手元に clone している必要があります（任意）。
+
+## 一緒に書く
+
+### 1. `app`: 開く、戻る
+
+`tests/05-app-and-browser/app.e2e.ts` を作ります。
+
+```ts
+// tests/05-app-and-browser/app.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('baseUrl and open', async ({ app, browser }) => {
+  console.log('baseUrl:', app.baseUrl);
+  await app.open();                      // config の app.url そのもの
+  await expect(browser).toHaveURL('/');
+  await app.open('/todos');              // 相対パス
+  await expect(browser).toHaveURL('/todos');
+  await app.open(new URL('/slow', app.baseUrl).href); // 絶対 URL でもよい
+  await expect(browser).toHaveURL('/slow');
+});
+
+test('back', async ({ app, browser, screen }) => {
+  await app.open('/todos');
+  await screen.getByRole('link', 'Ambiguous page').tap();
+  await expect(browser).toHaveURL('/ambiguous');
+  await app.back();
+  await expect(browser).toHaveURL('/todos');
+});
+```
+
+**観察ポイント**: `app.baseUrl` は config の `app.url` を解決した値です（`stdout` に出ます）。末尾に `/` は付かないので、文字列を足して `${app.baseUrl}/slow` と書けます。`new URL('/slow', app.baseUrl)` でも同じ URL になります。なお、[第 10 章](/chapters/10-api-testing/)では組み込みの `request` フィクスチャを使って相対パス `/api/...` を直接呼び出す方法も学びます。
+
+### 2. `app`: 作り直す、消す
+
+練習用アプリは cookie でセッションを区別しています。`restart` と `clearState` の違いが、そのままセッションの違いとして見えます。
+
+```ts
+test('restart keeps the session, clearState drops it', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Survives a restart');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+
+  await app.restart();                   // ブラウザを作り直すが cookie は残る → 同じセッション
+  await app.open('/todos');
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+
+  await app.clearState();                // cookie も消える → 新しいセッション
+  await app.open('/todos');
+  await expect(screen.getByRole('status')).toHaveText('0 remaining');
+});
+
+test('screenshot returns a path', async ({ app }) => {
+  await app.open('/');
+  const path = await app.screenshot('home');
+  console.log('screenshot at', path);
+  expect(path).toMatch(/home\.png$/);
+});
+```
+
+| メソッド | 何が起きるか | 使いどころ |
+| --- | --- | --- |
+| `app.open(path?)` | ページを開く | 各テストの最初 |
+| `app.back()` | 履歴を 1 つ戻る | 戻るボタンの確認 |
+| `app.restart()` | ブラウザの実行環境を作り直す。cookie や localStorage は残る | 「リロードしても残るか」の確認 |
+| `app.clearState()` | cookie も localStorage も消して作り直す | まっさらな状態からやり直す |
+| `app.screenshot(label)` | 証拠画像を撮って絶対パスを返す | 任意の時点の記録 |
+| `app.startRecording` / `stopRecording` | テストの一区間だけ録画する（`{ video: 'off' }` と併用） | 特定操作の動画証跡 |
+
+`clearState()` を `serial` グループの中で呼ぶと、グループが共有している状態が消えるので使わないでください。
+
+### 3. `browser`: ページから読む、URL で cookie を絞る
+
+`tests/05-app-and-browser/browser.e2e.ts` を作ります。
+
+```ts
+// tests/05-app-and-browser/browser.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('read the page: url, title, evaluate, cookies', async ({ app, browser }) => {
+  await app.open('/todos');
+  expect(await browser.url()).toContain('/todos');
+  // title() は今の値を 1 回読むだけ。ページがタイトルを変えるまで待ってから読む（第 03 章）
+  await expect(browser).toHaveTitle('Todos · Todo App');
+  expect(await browser.title()).toBe('Todos · Todo App');
+  const lang = await browser.evaluate(() => document.documentElement.lang);
+  expect(lang).toBe('ja');
+
+  // 引数なしは全 cookie、URL を渡すとそのエンドポイントへ送信される cookie だけ返る
+  const allCookies = await browser.cookies();
+  expect(allCookies.map((c) => c.name)).toContain('sid');
+
+  const apiCookies = await browser.cookies('/api/todos');
+  expect(apiCookies.map((c) => c.name)).toContain('sid');
+});
+```
+
+**観察ポイント**
+
+- `browser.title()` を `app.open` の直後に読むと、まだ "Todo App" のことがあります（アプリがタイトルを後から変えるため）。[第 03 章](/chapters/03-expect/)の「読み取りは待たない」がそのまま出た例です。`expect(browser).toHaveTitle(...)` で待ってから読んでいます。
+- `browser.evaluate(関数)` はページの中でその関数を動かし、戻り値を返します。関数はページ側に送られるので、テストの変数は使えません（第 2 引数で JSON 値を渡します）。
+- `@e2e-dev/web@0.17.0` の `browser.cookies(urls?)` は、相対パス（`'/api/todos'`）や URL 配列（`['/api/todos', 'https://auth.example.com']`）を受け取り、domain・path・`Secure` 属性に一致してそのリクエストへ実際に送られる cookie だけを絞り込めます。[第 10 章](/chapters/10-api-testing/)でブラウザのセッション cookie を API リクエストへ引き継ぐときにも役立ちます。
+
+### 4. `browser`: ビューポートとメディア、オフライン切り替え
+
+```ts
+test('viewport and media emulation', async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ colorScheme: 'dark' });
+  await app.open('/');
+  const width = await browser.evaluate(() => window.innerWidth);
+  expect(width).toBe(390);
+  const dark = await browser.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches);
+  expect(dark).toBe(true);
+  await app.screenshot('phone-dark');
+});
+```
+
+**観察ポイント**: `app.open` の**前**に呼ぶと、最初からその大きさ・その配色で描画されます。スクリーンショット `phone-dark.png` を開いて、スマホ幅のダークモードになっていることを見てください。テスト全体で固定したいなら config の `web({ viewport, colorScheme })` に書きます。
+
+また、オフライン時の挙動をテストしたい場合は `await browser.setNetwork('offline')` / `await browser.setNetwork('online')` で全タブのネットワークを切り替えられます。
+
+### 5. `browser`: API をモックする、レスポンスを待つ
+
+```ts
+test('mock an API with route', async ({ app, browser, screen }) => {
+  await browser.route('**/api/todos', async (route) => {
+    await route.fulfill({
+      json: [
+        { id: 1, title: 'From the mock', done: false, createdAt: 0 },
+        { id: 2, title: 'Also mocked', done: true, createdAt: 0 },
+      ],
+    });
+  });
+  await app.open('/todos');
+  const list = screen.getByRole('list', 'Todos');
+  await expect(list.getByRole('listitem')).toHaveCount(2);
+  await expect(screen.getByRole('checkbox', 'Also mocked')).toBeChecked();
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+});
+
+test('wait for a response', async ({ app, browser, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Watched');
+  const [response] = await Promise.all([
+    browser.waitForResponse({ method: 'POST', url: '**/api/todos' }),
+    screen.getByRole('button', 'Add').tap(),
+  ]);
+  expect(response.status).toBe(201);
+  const body = await response.json();
+  expect(body).toMatchObject({ title: 'Watched', done: false });
+});
+```
+
+**観察ポイント**
+
+- `browser.route` は、ページが `/api/todos` を呼んだときに本物のサーバーの代わりに答えます。サーバーに todo を作らなくても「2 件ある画面」を作れるので、表示の確認が速く安定します。ページを開く**前**に登録します。
+- `route`・`unroute`・`waitForResponse`・`waitForRequest`・`waitForURL` は Playwright 準拠の URL グロブルールで照合します。`*` はパスセグメント内、`**` は `/` をまたいで一致し、**`?` はワイルドカードではなくリテラル文字**（クエリ文字列をそのまま書ける）、`{a,b}` はいずれかに一致します。先頭が `*` や絶対 URL でない相対パス（例: `'/api/todos'`）は `app.url` 基準で解決され、空文字 `''` はすべての URL に一致します（一方 `expect(browser).toHaveURL()` は `*` や `{` をリテラルとして比較します）。さらに `route`・`unroute`・`waitForResponse`・`waitForRequest` は `{ method: 'POST', url: '**/api/todos' }` のように HTTP メソッドで絞り込むパターンも受け取ります。
+- `waitForResponse` は「待ち始めてから」来たレスポンスを捕まえるので、クリックと同時に始める必要があります。`Promise.all([...])` で 2 つを同時に動かすのが定石です。
+- `response.json()` で中身を読めます。[第 10 章](/chapters/10-api-testing/)の API テストの入口です。
+
+### 6. config: どこで、どのブラウザで
+
+`e2e.config.ts` をもう一度見ます。設定オブジェクトには `satisfies E2EConfig` を付ける書き方のほか、`import { defineConfig } from 'e2e'` を使って `export default defineConfig({ ... })` と書くこともできます（`defineConfig` を使うと `services` や `typeof config` を渡す `test.extend` の型推論もそのまま保たれます）。
+
+```ts
+targets: [{ engine: web(), app }],
+```
+
+`web()` の括弧の中でブラウザの設定ができます。
+
+| オプション | 既定 | 例 |
+| --- | --- | --- |
+| `browser` | `'chromium'` | `'firefox'`、`'webkit'` |
+| `viewport` | 1280 × 720 | `{ width: 390, height: 844 }`、`null`（ウィンドウいっぱい） |
+| `deviceScaleFactor` | `1` | `2`（高 DPI スクリーンショット向け。`viewport: null` とは併用不可） |
+| `chromiumSandbox` | macOS / Windows は `true`、Linux は `false` | `true` / `false`（ローカル起動 Chromium の OS サンドボックス制御） |
+| `colorScheme` / `reducedMotion` | ブラウザ任せ | `'dark'`、`'reduce'` |
+| `testIdAttribute` | `'data-testid'` | `'data-test'` |
+| `locale` / `timezoneId` | ブラウザ・マシン任せ | `'ja-JP'`、`'Asia/Tokyo'` |
+| `headers` / `basicAuth` | なし | 保護されたプレビュー環境への認証ヘッダや Basic 認証 |
+
+`web({ headers })` や `web({ basicAuth })` の認証情報は、既定では `app.url` と同じオリジン（スキーム・ホスト・ポート）にだけ送信されます。認証が必要な別ドメインの API がある場合は、信頼できるオリジンだけ `credentialOrigins` に明示します。この教材の公開アプリでは追加設定は不要です。
+
+ターゲットは複数並べられます。`{ name: 'phone', engine: web({ viewport: { width: 390, height: 844 } }), app }` を足せば、同じテストがスマホ幅でも走ります。`--target phone` で片方だけ実行できます。
+
+`app` の方は「テスト対象がどこにいるか」です。通常の `http(s):` URL に加え、ローカル起動ブラウザで静的 HTML ファイルを直接テストしたい場合は `app.url` に `file:` URL（例: `file:///path/to/index.html`、ディレクトリ指定は不可）も指定できます。この教材では次のように環境変数で 3 通りに切り替えられます。
+
+```ts
+const app = process.env.APP_DIR
+  ? {
+      url: 'http://localhost:3000',
+      command: {
+        executable: 'npm',
+        args: ['run', 'dev'],
+        cwd: process.env.APP_DIR,
+        log: '.e2e/logs/app.log',
+        reuseExisting: true,
+      },
+    }
+  : { url: process.env.APP_URL ?? PUBLIC_APP_URL };
+```
+
+| 方法 | コマンド | 何が起きるか |
+| --- | --- | --- |
+| 公開 URL（既定） | `npx e2e run …` | 何も起動しない |
+| 別の場所 | `APP_URL=http://localhost:3000 npx e2e run …` | その URL に向く。アプリは自分で起動しておく |
+| ランナーが起動 | `APP_DIR=/path/to/test-automation-practice-app npx e2e run …` | `cwd` で `npm run dev` を起動し、`url` が答えるまで待ってからテストする。終わったら止める |
+
+`APP_DIR` で動かすと、出力の最初に `✓ target "web" command ready 3.24s` と出て、アプリのログは `.e2e/logs/app.log` に残ります。`reuseExisting: true` は「既に 3000 番で動いていればそれを使う」という意味です（CI では無視されます）。
+
+実務では「アプリと同じリポジトリにテストがあり、ランナーが起動する」形が一番多く、ステージングやプレビュー環境に向けるときは `APP_URL` を使います。
+
+### 完成形
+
+```bash
+npx e2e run tests/05-app-and-browser
+```
+
+```text
+ ✓ |web| tests/05-app-and-browser/app.e2e.ts (4 tests)
+ ✓ |web| tests/05-app-and-browser/browser.e2e.ts (4 tests)
+      Tests  8 passed (8)
+```
+
+## 読む
+
+- [app リファレンス](https://e2e.com/docs/reference/app): 全体（短くまとまっています）。
+- [Browser ガイド](https://e2e.com/docs/browser): 「Mock an API」「Handle a dialog」「Emulate dark mode」「Cookies」「Pick a browser」。
+- [Web ガイド](https://e2e.com/docs/web): 「Starting your app」「Viewports」。
+- [Browser リファレンス](https://e2e.com/docs/reference/web): 「Options」の表と「The browser fixture」の表。各メソッドは必要になったときに引きます。
+- オフライン参照・CLI 補足: `node_modules/e2e/docs/reference/app.mdx`、`node_modules/e2e/docs/reference/web.mdx`、`npx e2e guide setup` も参照できます。
+
+## 自分の言葉で書き直す
+
+`tests/05-app-and-browser/mock-me.e2e.ts` を作り、次を満たすテストを書いてください。
+
+1. `browser.route` で `/api/me` が `{ username: 'alice' }` を返すようにする。
+2. `/` を開く。
+3. ログインしていないのに、ヘッダーに "Signed in as alice" と "Sign out" ボタンが出ていることを確認する。
+4. "Sign in" リンクが無いことを確認する（ヒント: `toHaveCount(0)`）。
+
+`npx e2e run tests/05-app-and-browser` で全部通れば合格です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `browser.title()` や `url()` が古い値 | 読み取りは待たない | `expect(browser).toHaveTitle` / `toHaveURL` で待つ |
+| `route` が効かない | ページを開いた後に登録した | `app.open` の前に `browser.route` |
+| `waitForResponse` が時間切れ | 待ち始める前にレスポンスが来た | `Promise.all` でクリックと同時に始める |
+| `evaluate` で `ReferenceError` | ページ側で動く関数からテストの変数を参照した | 値は第 2 引数で渡す |
+| `APP_UNREACHABLE` が `APP_DIR` で出る | `cwd` が違う、`npm install` していない、60 秒で起動しない | `.e2e/logs/app.log` を見る。必要なら `startupTimeout` を伸ばす |
+
+## まとめ
+
+- `app` は「開く・戻る・作り直す・消す・撮る」。`restart` は状態を残し、`clearState` は消す。
+- `browser` はページから読み（`evaluate`、URL 絞り込み対応の `cookies`）、環境を変え（`setViewport`、`emulateMedia`、`setNetwork`）、通信に割り込む（`route`、`waitForResponse`、`waitForRequest`）。
+- `web()` でブラウザの設定、`app` でテスト対象の場所。`APP_URL` / `APP_DIR` で切り替える。
+
+ここまでがモデル無しで書ける範囲です。次の[第 06 章: agent ステップ](/chapters/06-agent-steps/)から、自然言語でゴールを渡す `agent.act` を使います。使うプロバイダに合わせてモデル設定とサインインを準備しておきましょう。

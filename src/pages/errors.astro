@@ -1,0 +1,355 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getChapterUrl } from '../lib/chapter-utils';
+import { ERROR_ENTRIES, type ErrorCategory } from '../lib/errors';
+
+const categories: Array<{ id: ErrorCategory | 'all'; label: string }> = [
+  { id: 'all', label: 'すべて' },
+  { id: 'setup', label: '初期構築' },
+  { id: 'locator', label: 'ロケータ' },
+  { id: 'agent', label: 'AI Agent' },
+  { id: 'runtime', label: '実行時' },
+  { id: 'config', label: '設定' },
+];
+
+const categoryLabelMap: Record<ErrorCategory, string> = {
+  setup: '初期構築',
+  locator: 'ロケータ',
+  agent: 'AI Agent',
+  runtime: '実行時',
+  config: '設定',
+};
+
+interface InlineSegment {
+  text: string;
+  isCode: boolean;
+}
+
+function splitInlineCode(input: string): InlineSegment[] {
+  const parts = input.split(/(`[^`]+`)/g);
+  return parts
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+        return { text: part.slice(1, -1), isCode: true };
+      }
+      return { text: part, isCode: false };
+    });
+}
+---
+
+<BaseLayout
+  title="エラーコード逆引き"
+  description="e2e 0.25.0 の全エラーコードとつまずきやすい症状を、原因・対処法・該当章リンク付きで逆引き検索できます。"
+  isHome={false}
+>
+  <div class="errors-page lab-container">
+    <header class="errors-header">
+      <h1 class="errors-h1">エラーコード逆引き</h1>
+      <p class="errors-desc">
+        <code>e2e 0.25.0</code> で発生する代表的なエラーコードと解決策を一覧で検索できます。コード名やメッセージの一部で絞り込んでください。
+      </p>
+    </header>
+
+    <section class="errors-controls" aria-label="エラーコードの検索と絞り込み">
+      <div class="search-field-wrap">
+        <label for="error-search-input" class="search-field-label">キーワード検索</label>
+        <input
+          id="error-search-input"
+          type="search"
+          class="error-search-input"
+          placeholder="例: APP_UNREACHABLE, LOCATOR_AMBIGUOUS, タイムアウト"
+          autocomplete="off"
+          data-error-query
+        />
+      </div>
+
+      <div class="category-row">
+        <div class="segmented-control category-tabs" role="radiogroup" aria-label="カテゴリ絞り込み">
+          {categories.map((cat, idx) => (
+            <button
+              type="button"
+              role="radio"
+              aria-checked={idx === 0 ? 'true' : 'false'}
+              data-error-category={cat.id}
+            >
+              {cat.label}
+            </button>
+          ))}
+        </div>
+
+        <span class="result-count tabular-nums" data-error-count aria-live="polite">
+          {ERROR_ENTRIES.length} 件表示
+        </span>
+      </div>
+    </section>
+
+    <div class="table-wrap">
+      <table class="errors-table">
+        <thead>
+          <tr>
+            <th>エラーコード</th>
+            <th>分類</th>
+            <th>症状・原因</th>
+            <th>対処法</th>
+            <th>関連章</th>
+          </tr>
+        </thead>
+        <tbody data-error-tbody>
+          {ERROR_ENTRIES.map((entry) => (
+            <tr data-error-code={entry.code}>
+              <td class="code-cell">{entry.code}</td>
+              <td class="cat-cell">{categoryLabelMap[entry.category]}</td>
+              <td>
+                <div class="symptom-text">
+                  {splitInlineCode(entry.symptom).map((seg) =>
+                    seg.isCode ? <code class="inline-code">{seg.text}</code> : seg.text,
+                  )}
+                </div>
+                <div class="cause-text">
+                  {splitInlineCode(entry.cause).map((seg) =>
+                    seg.isCode ? <code class="inline-code">{seg.text}</code> : seg.text,
+                  )}
+                </div>
+              </td>
+              <td>
+                {splitInlineCode(entry.fix).map((seg) =>
+                  seg.isCode ? <code class="inline-code">{seg.text}</code> : seg.text,
+                )}
+              </td>
+              <td class="chapter-cell">
+                <a href={getChapterUrl(entry.chapterSlug)} class="lab-link">
+                  {entry.chapterLabel}
+                </a>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <p class="empty-errors" data-error-empty hidden>
+      一致するエラーコードが見つかりませんでした。検索語を短くするか、カテゴリを「すべて」に戻してください。
+    </p>
+  </div>
+</BaseLayout>
+
+<style>
+  .errors-page {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+  }
+
+  .errors-header {
+    margin-bottom: 1.75rem;
+  }
+
+  .errors-h1 {
+    margin: 0 0 0.5rem;
+    font-size: clamp(1.75rem, 3.2vw, 2.25rem);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: var(--text-primary);
+  }
+
+  .errors-desc {
+    margin: 0;
+    max-width: 65ch;
+    color: var(--text-muted);
+  }
+
+  .errors-desc code {
+    font-size: var(--text-sm);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 3px;
+    padding: 0.1rem 0.35rem;
+    color: var(--text-primary);
+  }
+
+  .errors-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .search-field-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    max-width: 38rem;
+  }
+
+  .search-field-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .error-search-input {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    border: 1px solid var(--border-hairline);
+    border-radius: 4px;
+    background-color: var(--bg-elevated);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: 1.4;
+    transition: border-color 160ms var(--ease-precision);
+  }
+
+  .error-search-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .category-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+  }
+
+  .category-tabs {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .result-count {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border-top: 1px solid var(--border-hairline);
+  }
+
+  .errors-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .errors-table thead {
+    background-color: var(--bg-surface);
+  }
+
+  .errors-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-hairline);
+    white-space: nowrap;
+  }
+
+  .errors-table td {
+    padding: 0.875rem 0.75rem;
+    border-bottom: 1px solid var(--border-hairline);
+    vertical-align: top;
+    color: var(--text-primary);
+  }
+
+  .errors-table tr[hidden] {
+    display: none;
+  }
+
+  /* Semantic fail color reserved strictly for the error code column */
+  .code-cell {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--semantic-fail) !important;
+    white-space: nowrap;
+  }
+
+  .cat-cell {
+    color: var(--text-muted) !important;
+    white-space: nowrap;
+  }
+
+  .symptom-text {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+  }
+
+  .cause-text {
+    color: var(--text-muted);
+  }
+
+  .inline-code {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 3px;
+    padding: 0.05rem 0.3rem;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .chapter-cell {
+    white-space: nowrap;
+  }
+
+  .empty-errors {
+    padding: 2rem 0;
+    color: var(--text-muted);
+  }
+</style>
+
+<script>
+  import { ERROR_ENTRIES, type ErrorCategory, filterErrorEntries } from '../lib/errors';
+
+  const queryInput = document.querySelector<HTMLInputElement>('[data-error-query]');
+  const categoryButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('[data-error-category]'),
+  );
+  const tbody = document.querySelector<HTMLTableSectionElement>('[data-error-tbody]');
+  const countEl = document.querySelector<HTMLElement>('[data-error-count]');
+  const emptyEl = document.querySelector<HTMLElement>('[data-error-empty]');
+
+  let activeCategory: ErrorCategory | 'all' = 'all';
+
+  function updateTable() {
+    if (!tbody) return;
+    const query = queryInput?.value ?? '';
+    const matched = filterErrorEntries(ERROR_ENTRIES, query, activeCategory);
+    const matchedCodes = new Set(matched.map((e) => e.code));
+
+    for (const row of Array.from(tbody.querySelectorAll<HTMLTableRowElement>('tr[data-error-code]'))) {
+      const code = row.dataset.errorCode ?? '';
+      row.hidden = !matchedCodes.has(code);
+    }
+
+    if (countEl) {
+      countEl.textContent = `${matched.length} / ${ERROR_ENTRIES.length} 件表示`;
+    }
+    if (emptyEl) {
+      emptyEl.hidden = matched.length > 0;
+    }
+  }
+
+  if (queryInput) {
+    queryInput.addEventListener('input', updateTable);
+  }
+
+  for (const btn of categoryButtons) {
+    btn.addEventListener('click', () => {
+      const cat = btn.dataset.errorCategory as ErrorCategory | 'all' | undefined;
+      if (!cat) return;
+      activeCategory = cat;
+      for (const b of categoryButtons) {
+        b.setAttribute('aria-checked', String(b === btn));
+      }
+      updateTable();
+    });
+  }
+</script>

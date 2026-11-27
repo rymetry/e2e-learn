@@ -1,0 +1,371 @@
+---
+chapterNumber: "08"
+order: 8
+part: "part-1"
+title: "デバッグ"
+summary: "失敗ブロックと trace.md の読み方、--step と screen.pause() によるステップ実行、最新エラーコード体系、sleep を書かない待ち方を学びます。"
+modelRequirement: "partial"
+estimatedMinutes: 35
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "07-replay-cache"
+solutionFiles:
+  - filename: "read-the-failure.md"
+    lang: "markdown"
+    sourcePath: "08-debugging/read-the-failure.md"
+  - filename: "fixed.e2e.ts"
+    lang: "ts"
+    sourcePath: "08-debugging/fixed.e2e.ts"
+---
+
+## この章で分かること
+
+- 失敗ブロックの読み方: エラーコード、`expected` / `observed`、行、`❯ at`、`❯ app N errors`、`❯ trace`。
+- `trace.md` の Steps、App log、Screen at failure から**原因の場所**（テスト / ロケータ / アプリ）を切り分ける。
+- **ステップ実行と一時停止**: `e2e run --step`（端末の対話キーと非 TTY コマンド）、`screen.pause()`、停止中テストへの MCP アタッチ（`open_session { attach }`）。
+- 直すときの道具: `file:line`、`--action-timeout`、`--retries 0`、`--last-failed`、`--headed`、`--video`、`--debug`、`--ai-trace`。
+- `sleep` を書かない理由と、代わりに書くもの。
+
+## 前提
+
+- 第 07 章までを終えていること。5 番だけモデルが必要です。
+- 作業ディレクトリはハンズオン用プロジェクト `my-e2e-hands-on/` を前提とします。
+
+## 一緒に書く
+
+この章は「壊れたテストを読む」練習です。`tests/08-debugging/broken.e2e.ts` に 5 つの壊れたテストを `test.skip` で用意します。1 つずつ `test` に戻して実行し、失敗ブロックと `trace.md` を読んでから、直した版（ページ下部の『模範解答を見る』の `fixed.e2e.ts`）と見比べてください。
+
+実行は `--grep` で 1 つだけ選ぶと速いです。
+
+```bash
+npx e2e run tests/08-debugging/broken.e2e.ts --grep "^1\." --action-timeout 5000
+```
+
+`--action-timeout 5000` は、見つからないロケータを 30 秒ではなく 5 秒であきらめさせるオプションです。直している間は付けておきます。
+
+### 1. ロケータが何にも一致しない
+
+```ts
+// tests/08-debugging/broken.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test.skip('1. a locator that matches nothing', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByRole('button', 'Create').tap(); // 画面のボタンは "Add"
+});
+```
+
+```text
+ FAIL  |web| tests/08-debugging/broken.e2e.ts > 1. a locator that matches nothing
+LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Create")
+ ❯ tests/08-debugging/broken.e2e.ts:7:3
+      7|   await screen.getByRole('button', 'Create').tap();
+       |   ^
+ ❯ at https://test-automation-practice-app.…workers.dev/todos
+ ❯ trace .e2e/results/broken-1-a-locator-that-matches-nothing-…/trace.md
+```
+
+**読み方**: コードは `LOCATOR_NOT_FOUND`、ロケータは `button "Create"`。`trace.md` の `## Screen at failure` を開くと、画面には `button "Add"` があって `Create` は無いと分かります。近い名前の部品があるときは、失敗ブロックに `❯ on screen #n… button "…"` という候補の行が出ます（第 02 章の `LOCATOR_AMBIGUOUS` で見ました）。
+
+**直し方**: 画面の言葉に合わせる。`fixed.e2e.ts` の 1 番です。
+
+### 2. アプリが到達しない期待
+
+```ts
+test.skip('2. an expectation the app never reaches', async ({ app, screen }) => {
+  await app.open('/slow');
+  await expect(screen.getByRole('status')).toHaveText('Loaded'); // Loaded は heading。status は消える
+});
+```
+
+```text
+ASSERTION_FAILED: expect.toHaveText failed
+locator: getByRole("status")
+expected: text "Loaded"
+observed: no node (match count 0)
+```
+
+**読み方**: `observed: no node` は「最後には一致する部品が無かった」。`trace.md` の Steps を見ると、`expect gave up after N reads in 5.0s: text "Loading…" (1 match) xN -> at …ms no node` のように、**待っている間に何を読んだか**が時系列で残っています。`status` は "Loading…" を出した後で消え、"Loaded" は `heading` として出た、と読み取れます。
+
+**直し方**: 期待を正しい部品に向ける。「消えたこと」は `toBeHidden()` です。
+
+ここで 1 つ判断のコツです。`trace.md` の読み取りの記録が**ずっと同じ値**なら、期待が間違っているか、アプリがその状態に到達していません。**途中で値が変わっている**なら、タイミングの問題です。
+
+### 3. 読み取りがアプリと競争する
+
+```ts
+test.skip('3. a read that races the app', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  const text = await screen.getByRole('status').textContent(); // 読んだ瞬間はまだ 0 かもしれない
+  expect(text).toBe('1 remaining');
+});
+```
+
+```text
+ASSERTION_FAILED: expected "0 remaining" to be "1 remaining"
+ ❯ tests/08-debugging/broken.e2e.ts:22:16
+     22|   expect(text).toBe('1 remaining');
+```
+
+**読み方**: 失敗した行は `expect(text)` ですが、原因はその 1 行上です。`textContent()` は 1 回読むだけで、アプリが更新する前の値を持ってきました。公開 URL への往復は数百ミリ秒かかるので、ローカルでは通るのに公開 URL では落ちる、という形で現れます（第 03 章）。
+
+**直し方**: `await expect(screen.getByRole('status')).toHaveText('1 remaining')`。
+
+ここで **`sleep` を書かない**理由をまとめます。`await new Promise((r) => setTimeout(r, 2000))` のような固定の待ちは、遅い環境では足りず、速い環境では無駄です。e2e には待つ道具が揃っています。
+
+| 待ちたいもの | 書くもの |
+| --- | --- |
+| 画面の状態（文字、表示、個数） | `await expect(ロケータ).マッチャー()` |
+| URL | `await expect(browser).toHaveURL(...)` |
+| 言葉でしか言えない状態 | `await agent.waitFor('…')`（モデルが要る） |
+| API や DB の値 | `await expect.poll(() => 読む関数).マッチャー()` |
+| 複数ステップのまとまり | `await expect(async () => { ... }).toPass()` |
+
+### 4. アプリが裏で失敗している
+
+```ts
+test.skip('4. the app fails behind the scenes', async ({ app, browser, screen }) => {
+  await browser.route('**/api/todos', async (route) => {
+    if (route.request.method === 'POST') {
+      await route.fulfill({ status: 500, json: { error: 'boom' } }); // サーバーが落ちた状況を作る
+      return;
+    }
+    await route.continue();
+  });
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+});
+```
+
+```text
+ASSERTION_FAILED: expect.toHaveText failed
+locator: getByRole("status")
+expected: text "1 remaining"
+observed: text "0 remaining" (match count 1)
+ ❯ at https://test-automation-practice-app.…workers.dev/todos
+ ❯ app 1 error logged
+   × network error: POST https://test-automation-practice-app.…workers.dev/api/todos 500 Internal Server Error
+ ❯ trace .e2e/results/broken-4-the-app-fails-behind-the-…/trace.md
+```
+
+**読み方**: 3 番とそっくりですが、`❯ app 1 error logged` とその下の行が違います。アプリのエラーは最初の 3 件までここに出ます。全部を見るときは `trace.md` の `## App log` を開きます。
+
+```text
+- step 4 · ✗ network error: `POST https://…/api/todos 500 Internal Server Error`
+```
+
+Add を押したときの API が 500 を返していました。テストは正しく、アプリ側の問題です。**`observed` が最後まで同じ値で、App log にエラーがあるなら、テストではなくアプリを疑う**、が判断の順序です。
+
+**直し方**: ここでは `route` でわざと 500 にしているので、直すべきはテストではなくアプリです。`fixed.e2e.ts` の 4 番は「API が 4xx/5xx でないこと」を `waitForResponse` で明示的に確かめる書き方にしてあります。本物のアプリが落ちたときに、画面の文字ではなく API の状態で失敗するようになります。
+
+### 5. モデルがゴールに到達できない
+
+```ts
+test(
+  '5. an agent goal the app cannot satisfy',
+  { tags: ['agent'], skip: 'wanted failure: remove skip to see it' },
+  async ({ app, agent }) => {
+    await app.open('/todos');
+    await agent.act('mark the todo named "Nonexistent" as done'); // そんな todo は無い
+  },
+);
+```
+
+`skip: '…'` を消して、`--debug` 付きで実行します。
+
+```bash
+npx e2e run tests/08-debugging/broken.e2e.ts --grep "^5\." --debug
+```
+
+```text
+SEED_DATA_MISSING: agent.act failed: The Todos page loaded and shows an empty list with 0 remaining; no todo named "Nonexistent" is present to mark done.
+ ❯ tests/08-debugging/broken.e2e.ts:41:3
+
+[e2e debug] agent steps (execution order, model chatgpt.responses/gpt-6-luna)
+  step                                                      total   model  observe  action  calls  tokens in/out      cached  cost
+  agent.act "mark the todo named \"Nonexistent\" as done"  4582ms  4442ms    230ms     0ms      2        8590/70  60% (5120)     -
+```
+
+**読み方**: `agent.act` の失敗には、モデルの説明がそのまま付きます。コードが `SEED_DATA_MISSING` なのは、モデルが「前提のデータが無い」と判断したからです（製品の不具合なら `ACTION_FAILED`、操作できない UI なら `AUTOMATION_UNSUPPORTED`、モデルが回答を拒否したなら `MODEL_REFUSED`）。`--debug` の表で、何回モデルを呼び、何トークン使ったかが分かります。各ステップの会話の記録（transcript）も `.e2e/results/<テスト>/attempt-1/` に保存されます。
+
+**直し方**: ゴールの前提を先に作る。todo を追加してからマークする、または第 11 章の `seedTodos` のように API で用意する。
+
+モデルが**間違った操作**をしたときの直し方は、第 06 章の「ゴールの書き方」の順です。1. ゴールを画面の言葉に直す、2. `context` / `agentContext` で語彙を足す、3. `system` で振る舞いを変える。`--ai-trace` を付けると `.e2e/ai-trace.json` にモデルへの入力と出力が全部残ります（大きいので `npx unbox-ai runs .e2e/ai-trace.json` で読みます）。
+
+### 6. ステップ実行と一時停止（`--step` / `screen.pause()` / MCP アタッチ）
+
+`e2e@0.25.0` では、テストを 1 ステップずつ止めながら画面やログを確認できます。
+
+#### `e2e run --step` で 1 ステップずつ進める
+
+```bash
+npx e2e run tests/08-debugging/fixed.e2e.ts --grep "^1\." --step --headed
+```
+
+最初のステップを実行した後、次のステップの前で一時停止します。`--headed` を一緒に付けるとブラウザを目で見ながら進められます。
+
+```text
+ ❯ |web| tests/08-debugging/fixed.e2e.ts 0/1
+   └── 1. fixed: use the name on screen (k3f9)
+       ✓ app.open "/todos" 412ms
+       ⏸ step 2  locator.fill "getByLabel("New todo")"  tests/08-debugging/fixed.e2e.ts:6
+
+Paused (k3f9) at step 2
+  press enter to run this step, press h to show help, press q to quit
+```
+
+端末（TTY）のプロンプトでは次のキーが使えます。
+
+| キー | 動作 |
+| --- | --- |
+| `Enter` | 停止中の 1 ステップを実行し、次のステップでまた止める |
+| `s` | 現在の画面のアクセシビリティツリーを表示（`j`/`k` でスクロール、`q` で戻る） |
+| `l` | 現在の attempt の App log を最新行から表示 |
+| `n` | このテストの残りを続けて実行し、次のテストで止める |
+| `a` | 残りの実行を止めずに最後まで流す |
+| `h` | キー一覧を表示・非表示 |
+| `q` / `Esc` | 実行を中断する（終了コード 130） |
+
+一時停止中の時間はステップ・テスト・実行のタイムアウトには加算されません。`--step` は 1 テストずつ順番に実行され、CI、`--watch`、`--workers` が 2 以上の指定とは併用できません。
+
+#### 端末が無い環境（コーディングエージェントのシェルなど）での `--step`
+
+標準入力または標準出力が TTY でない環境では、`--step` はテストをバックグラウンドで保持し、最初の停止ステップと画面ツリーを表示してすぐ戻ります。同じディレクトリから次のサブコマンドで操作します。
+
+```bash
+npx e2e run tests/08-debugging/fixed.e2e.ts --grep "^1\." --step
+npx e2e run --step next   # 1 ステップ進めて次の停止点で戻る
+npx e2e run --step rest   # 残りを止めずに最後まで実行する
+npx e2e run --step stop   # 実行を中断する（終了コード 130）
+```
+
+同じディレクトリで同時に保持できるステップ実行は 1 つまでで、操作が無いまま 30 分経つと自動終了します。
+
+#### `screen.pause()` で任意の行にブレークポイントを置く
+
+特定の行だけ止めたいときは、テスト本体・`beforeEach`・フィクスチャのセットアップ内に `await screen.pause()` を書きます。`--step` を付けない通常の `e2e run` でもその行で止まります。
+
+```ts
+test('inspects the screen halfway', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Buy milk');
+  await screen.pause(); // ここで一時停止
+  await screen.getByRole('button', 'Add').tap();
+});
+```
+
+CI 環境で `screen.pause()` に到達すると即座に `PAUSE_UNAVAILABLE` で失敗するため、コミット前に必ず削除してください。
+
+#### 停止中のテストに MCP でアタッチする
+
+停止ヘッダーに表示される ID（上の例では `k3f9`）を使うと、同じディレクトリで動いている `e2e mcp` サーバーから停止中のテスト画面に直接アタッチできます（第 14 章）。
+
+```text
+open_session {attach: "k3f9"}
+```
+
+アタッチ中は `observe` や `locate`、`run_code` でライブ画面を調べられ、`close_session` でテストを停止状態のままデタッチできます。元の端末で `Enter` を押すか `npx e2e run --step next` を実行するとテストが再開します。
+
+### 7. 代表的なエラーコードと終了コード
+
+e2e のエラーはすべてクラス（終了コードを決める）とコード（原因を示す）を持ちます。終了コードの優先順位は `130 > 4 > 3 > 2 > 1 > 0` です（1 = テスト失敗、2 = 設定・収集・ポリシー、3 = インフラ・環境、4 = ランナー内部エラー、130 = 中断）。
+
+| コード | 主な原因 | クラス（終了コード） |
+| --- | --- | --- |
+| `LOCATOR_NOT_FOUND` | タイムアウト内に一致する部品が見つからない | test (1) |
+| `LOCATOR_AMBIGUOUS` | 単一操作のロケータに複数一致した（即座に失敗） | test (1) |
+| `INVALID_LOCATOR` | ロケータ引数や Playwright セレクタ構文（不正な CSS / XPath 等）が誤っている | test (1) |
+| `ASSERTION_FAILED` | `expect` のマッチャーや `agent.assert` が不一致 | test (1) |
+| `ACTION_FAILED` | 操作不能・タイムアウト、または `request` のネットワーク失敗 | test (1) |
+| `STEP_NOT_AWAITED` | ステップや `expect.poll` / `toPass` に `await` を付け忘れてテスト本体が終了した | test (1) |
+| `PAUSE_UNAVAILABLE` | `CI` 環境で `screen.pause()` を呼んだ | test (1) |
+| `MODEL_REFUSED` | モデルがプロンプトを拒否した（`content-filter`） | test (1) |
+| `SEED_DATA_MISSING` | agent が前提データの不足を検知した | configuration (2) |
+| `CANCELLED` | MCP の `open_session` 中断や `@e2e-dev/core` の `AbortSignal` によるキャンセル | infrastructure (3) |
+| `NODE_UNSUPPORTED` | 対応外の Node.js / Bun バージョン、または Bun で `e2e/runner` API を呼んだ | infrastructure (3) |
+
+全コードの詳細な引き方・対策は、このサイトの [エラーコード辞書](/errors/)（`/errors/`）と公式の [Errors リファレンス](https://e2e.com/docs/reference/errors) にまとまっています。
+
+### 直すときの道具
+
+| 道具 | 何をするか | 使う場面 |
+| --- | --- | --- |
+| `ファイル:行` | その行で始まるテストだけ実行 | 1 つを直している間 |
+| `--grep "パターン"` | テスト名で絞る | 名前で選びたいとき |
+| `--action-timeout 5000` | 操作の待ち時間を短く | 見つからないロケータを早く失敗させる |
+| `--retries 0` | 再試行しない | CI 設定が再試行するとき |
+| `--last-failed` | 前回失敗したテストだけ | 複数直した後の確認 |
+| `--headed` | ブラウザを表示して実行 | 目で見たいとき |
+| `--step` / `screen.pause()` | 1 ステップずつ、または任意の行で停止 | 途中の画面・ログを対話的に追うとき |
+| `--video` | 録画を残す | 一瞬の挙動を後で見たいとき |
+| `--debug` | ステップ表と transcript | モデルの挙動とコスト |
+| `--ai-trace` | モデルへの全入出力 | モデルが何を見たか |
+| `--no-cache` | 再生せずライブで | 古い録画を疑うとき（第 07 章） |
+
+`--last-failed` を試してみます。1 と 2 を実行して失敗させてから、次を実行します。
+
+```bash
+npx e2e run --last-failed --action-timeout 5000
+```
+
+```text
+   × 1. a locator that matches nothing
+   × 2. an expectation the app never reaches
+      Tests  2 failed | 0 passed (2)
+```
+
+その 2 つだけが走り、結果は `.e2e/results/<テスト>/rerun-1/` に、前回の `attempt-1/` を残したまま書かれます。
+
+### 直す順番
+
+失敗したとき、毎回この順で見てください。
+
+1. **エラーコード**を読む。意味と直し方は [エラーコード辞書](/errors/) や公式の [Errors リファレンス](https://e2e.com/docs/reference/errors) で確認する。
+2. **`expected` / `observed`** を読む。`observed` が「無い」なら部品、「違う値」なら期待かタイミング。
+3. **`❯ app N errors`** があれば `trace.md` の App log を見る。アプリのエラーならテストを疑う前にアプリ。
+4. **`trace.md` の Steps** で、失敗の前の各ステップが画面をどう変えたかを追う。`screen: unchanged` は操作が効いていない印。
+5. **Screen at failure** で、その瞬間の画面にある部品の名前を確かめる。必要なら `--step` や `screen.pause()` で途中の画面を止めて見る。
+6. 1 つ直したら `ファイル:行` と `--action-timeout 5000` で**その 1 つだけ**再実行する。直るまで `--no-cache` は付けない。
+7. 全部通ったら、`--no-cache` で 1 回ライブ実行する（agent を使うテストのみ）。
+
+失敗ブロックを読んだ後に、もう一度最初から画面を操作して確かめ直す必要はほとんどありません。実行がすでに全部見ています。
+
+## 読む
+
+- [Debugging a run](https://e2e.com/docs/debugging)（公式ドキュメント）: 全部。`Step through a test` と `Pause a test` も確認。
+- [Errors リファレンス](https://e2e.com/docs/reference/errors) とサイト内の [エラーコード辞書](/errors/): 辞書として。「Exit codes」の表を先に読む。
+- オフライン補足: `npx e2e guide debugging` または `node_modules/e2e/docs/debugging.mdx`。
+
+## 自分の言葉で書き直す
+
+`broken.e2e.ts` の 1〜5 について、手元のメモに「失敗ブロックのどの行を見て」「`trace.md` のどこを見て」「何が原因と判断したか」を 1 行ずつ書いてから、自分で `fixed.e2e.ts` を書いて通してみてください。
+
+答え合わせはページ下部の『模範解答を見る』（`read-the-failure.md` と `fixed.e2e.ts`）を確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `COLLECTION_ERROR`: `test.skip(condition, reason)` | `test.skip('名前', { オプション }, 本体)` と書いた | オプション付きで登録時にスキップするなら `test('名前', { skip: '理由' }, 本体)` |
+| `STEP_NOT_AWAITED` | `tap()` や `expect(...)` に `await` を付け忘れた | 非同期ステップに必ず `await` を付ける |
+| `PAUSE_UNAVAILABLE` | `screen.pause()` を消さずに CI で走らせた | デバッグが終わったら `screen.pause()` を削除する |
+| `INVALID_LOCATOR` | セレクタ構文（CSS / XPath など）やロケータ引数が不正 | 正しいセマンティックロケータ（`getByRole` など）に直す |
+| 直したのに同じ失敗 | 古い録画の再生、または別のテストを実行している | `--no-cache`、`ファイル:行` の行番号を確認 |
+| `--last-failed` が `NO_LAST_RUN` | 前回の `report.json` が無い | 一度ふつうに実行する |
+| 失敗が再現しない | タイミング依存 | `--video` で録画し、`trace.md` の読み取り記録で値の変化を見る |
+
+## まとめ
+
+- 失敗ブロックは「コード → expected / observed → 行 → app のエラー（数と最初の 3 件）→ trace」の順で読む。
+- `trace.md` の Steps（読み取りの履歴）、App log、Screen at failure で、テスト・ロケータ・アプリのどれが原因か切り分ける。
+- 途中の状態を見たいときは `--step`（TTY キー / 非 TTY サブコマンド）や `screen.pause()`、必要なら MCP の `open_session { attach }` を使う。
+- `sleep` は書かない。`expect` / `toHaveURL` / `waitFor` / `expect.poll` / `toPass` で待つ。
+- 直すときは 1 つだけ、`--action-timeout 5000` で、録画を活かして再実行する。
+
+次の第 09 章では、ログインを 1 回だけ行って使い回す「セッション」と、秘密情報の扱いを学びます（モデル不要）。

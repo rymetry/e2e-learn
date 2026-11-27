@@ -1,0 +1,208 @@
+---
+import { Code } from 'astro-expressive-code/components';
+import type { LoadedSolutionFile } from '../lib/solutions';
+
+interface Props {
+  files: LoadedSolutionFile[];
+}
+
+const { files } = Astro.props;
+const instanceId = `solution-${Math.random().toString(36).slice(2, 8)}`;
+---
+
+{files.length > 0 && (
+  <section class="solution-reveal" aria-label="模範解答" data-pagefind-ignore data-solution-reveal>
+    <details class="solution-details">
+      <summary class="solution-summary">
+        <span class="solution-summary-title">模範解答を見る</span>
+        <span class="solution-summary-meta tabular-nums">
+          {files.length === 1 ? files[0].filename : `${files.length} ファイル`}
+        </span>
+      </summary>
+
+      <div class="solution-body">
+        {files.length > 1 && (
+          <div class="solution-tabs" role="tablist" aria-label="模範解答ファイル一覧">
+            {files.map((file, idx) => (
+              <button
+                type="button"
+                role="tab"
+                id={`${instanceId}-tab-${idx}`}
+                aria-controls={`${instanceId}-panel-${idx}`}
+                aria-selected={idx === 0 ? 'true' : 'false'}
+                tabindex={idx === 0 ? '0' : '-1'}
+                class="solution-tab"
+                data-solution-tab={String(idx)}
+              >
+                {file.filename}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div class="solution-panels">
+          {files.map((file, idx) => (
+            <div
+              id={`${instanceId}-panel-${idx}`}
+              role={files.length > 1 ? 'tabpanel' : undefined}
+              aria-labelledby={files.length > 1 ? `${instanceId}-tab-${idx}` : undefined}
+              class="solution-panel"
+              data-solution-panel={String(idx)}
+              hidden={idx !== 0}
+            >
+              <Code code={file.code} lang={file.lang} title={file.filename} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
+  </section>
+)}
+
+<style>
+  .solution-reveal {
+    margin-top: 2.75rem;
+    max-width: 65ch;
+  }
+
+  .solution-details {
+    border: 1px solid var(--border-hairline);
+    border-radius: 6px;
+    background-color: var(--bg-elevated);
+    overflow: hidden;
+  }
+
+  .solution-summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.875rem 1.125rem;
+    background-color: var(--bg-surface);
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 160ms var(--ease-precision);
+  }
+
+  .solution-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .solution-summary:hover {
+    background-color: var(--bg-elevated);
+  }
+
+  .solution-summary-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: var(--text-body);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .solution-summary-title::before {
+    content: "+";
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--accent);
+    width: 1rem;
+    text-align: center;
+  }
+
+  .solution-details[open] .solution-summary {
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .solution-details[open] .solution-summary-title::before {
+    content: "-";
+  }
+
+  .solution-summary-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .solution-body {
+    padding: 0;
+  }
+
+  .solution-tabs {
+    display: flex;
+    align-items: stretch;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border-hairline);
+    background-color: var(--bg-surface);
+  }
+
+  .solution-tab {
+    appearance: none;
+    border: 0;
+    border-right: 1px solid var(--border-hairline);
+    background-color: transparent;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    padding: 0.5rem 0.875rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 160ms var(--ease-precision), background-color 160ms var(--ease-precision);
+  }
+
+  .solution-tab:hover {
+    color: var(--text-primary);
+  }
+
+  .solution-tab[aria-selected="true"] {
+    background-color: var(--bg-elevated);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: inset 0 -2px 0 0 var(--accent);
+  }
+
+  .solution-panels {
+    padding: 1rem;
+  }
+
+  .solution-panel[hidden] {
+    display: none;
+  }
+
+  .solution-panel :global(.expressive-code) {
+    margin: 0;
+  }
+</style>
+
+<script>
+  const reveals = document.querySelectorAll<HTMLElement>('[data-solution-reveal]');
+  for (const reveal of reveals) {
+    const tabs = Array.from(reveal.querySelectorAll<HTMLButtonElement>('[data-solution-tab]'));
+    const panels = Array.from(reveal.querySelectorAll<HTMLElement>('[data-solution-panel]'));
+    if (tabs.length <= 1) continue;
+
+    const selectTab = (indexStr: string) => {
+      for (const tab of tabs) {
+        const selected = tab.dataset.solutionTab === indexStr;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
+      for (const panel of panels) {
+        panel.hidden = panel.dataset.solutionPanel !== indexStr;
+      }
+    };
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        if (tab.dataset.solutionTab) {
+          selectTab(tab.dataset.solutionTab);
+        }
+      });
+    }
+  }
+</script>

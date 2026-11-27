@@ -1,0 +1,279 @@
+---
+chapterNumber: "03"
+order: 3
+part: "part-1"
+title: "expect"
+summary: "「アサーションは待つ」の仕組み、読み取りと待機の違い、toBeEmpty・toBeInViewport・toPass・expect.poll の intervals 指定を含む主要マッチャー、否定・タイムアウト・expect.soft を学びます。"
+modelRequirement: "none"
+estimatedMinutes: 25
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 02 章を終えていること（ロールと名前で部品を指せる）"
+solutionFiles:
+  - filename: "ambiguous-status.e2e.ts"
+    lang: "ts"
+    sourcePath: "03-expect/ambiguous-status.e2e.ts"
+---
+
+## この章で分かること
+
+- `expect(ロケータ)` は**条件が成り立つまで読み直し続ける**。これが `sleep` を書かずに済む理由。
+- 「値を 1 回読む」（`textContent()`）と「成り立つまで待つ」（`expect`）の違い。
+- よく使うマッチャー（`toHaveText`、`toContainText`、`toHaveValue`、`toBeEmpty`、`toBeInViewport`、`toHaveCount`、`toBeChecked` など）、`.not`、タイムアウト、`expect.soft`、`expect.poll`、`expect(fn).toPass()`。
+
+## 前提
+
+- [第 02 章](/chapters/02-locators/)を終えていること（ロールと名前で部品を指せる）。
+- モデルは不要です。
+
+## 一緒に書く
+
+この章のテストは `tests/03-expect/expect.e2e.ts` に書きます。
+
+### 1. アサーションは待つ
+
+練習用アプリの `/slow` は、2 秒後に "Loaded" という見出しが出るページです。
+
+```ts
+// tests/03-expect/expect.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('an assertion waits for the app', async ({ app, screen }) => {
+  await app.open('/slow');
+  // "Loaded" は 2 秒後に出る。expect は出るまで（既定 5 秒まで）読み直し続ける。
+  await expect(screen.getByRole('heading', 'Loaded')).toBeVisible();
+});
+```
+
+```bash
+npx e2e run tests/03-expect/expect.e2e.ts:4
+```
+
+通ります。`trace.md` の Steps を見てください。
+
+```text
+2. ✓ `expect.toBeVisible` `getByRole("heading", name: "Loaded")` (2.5s)
+   - expect passed after 24 reads in 2.5s: no node (0 matches) x23 -> at 2472ms default states (1 match)
+```
+
+**観察ポイント**: `expect` は 2.5 秒の間に 24 回画面を読み、23 回は「無い」、24 回目で「ある」になって通りました。これが**アサーションは待つ**という仕組みです。アプリが遅くても、`setTimeout` や `sleep` を書く必要はありません。既定の待ち時間は 5 秒（`assertionTimeout`）で、過ぎると失敗します。
+
+### 2. 「読む」と「待つ」は違う
+
+```ts
+test('a read answers once, an assertion keeps reading', async ({ app, screen }) => {
+  await app.open('/slow');
+  const text = await screen.getByRole('status').textContent(); // 今の値を 1 回読む
+  expect(text).toBe('Loading…');                                // 値のマッチャーは待たない
+  await expect(screen.getByRole('status')).toBeHidden();         // 2 秒後に消えるのを待つ
+  await expect(screen.getByTestId('loaded')).toContainText('2 秒');
+});
+```
+
+**観察ポイント**
+
+- `textContent()` のような**読み取り**は、部品が見つかるまでは待ちますが、見つかったら今の値を返して終わりです。値が変わるのは待ちません。
+- `expect(text).toBe(...)` は**値のマッチャー**です。既に手元にある値を即座に比べます。`await` は要りません。
+- `expect(ロケータ).toBeHidden()` は、`status` が消えるまで待ちます。trace には `visible (1 match) x18 -> at 1940ms hidden (0 matches)` のように、消えた瞬間が残ります。
+
+使い分けの原則は、**画面の状態を確かめるなら `expect(ロケータ)`**、**手元の値を計算に使うなら読み取り**、です。「値が変わるのを待ちたい」のに読み取りを使うと、読んだ瞬間の古い値で失敗します。
+
+### 3. 文字のマッチャー
+
+```ts
+test('text matchers: exact, contained, pattern', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  const status = screen.getByRole('status');
+  await expect(status).toHaveText('1 remaining');        // 完全一致（前後の空白は無視）
+  await expect(status).toContainText('remaining');       // 部分一致
+  await expect(status).toHaveText(/^\d+ remaining$/);    // 正規表現
+  await expect(status).not.toHaveText('0 remaining');    // 否定
+});
+```
+
+| マッチャー | 通る条件 |
+| --- | --- |
+| `toHaveText('1 remaining')` | 文字が完全に一致（前後の空白と連続する空白は無視） |
+| `toContainText('remaining')` | その文字を含む |
+| `toHaveText(/^\d+ remaining$/)` | 正規表現に一致 |
+| `.not.toHaveText(...)` | 一致**しない**状態が 1 秒続く |
+
+**観察ポイント**: `.not` は「今一致していない」だけでは通りません。一致しない状態が 1 秒続いて初めて通ります。画面が切り替わる途中の一瞬を拾って誤って通ることを防ぐためです。
+
+### 4. 値、個数、状態、表示領域のマッチャー
+
+```ts
+test('value, count and state matchers', async ({ app, screen }) => {
+  await app.open('/todos');
+  const input = screen.getByLabel('New todo');
+  await input.fill('Buy milk');
+  await expect(input).toHaveValue('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(input).toBeEmpty();                       // 追加後は空になる（toHaveValue('') でも同じ）
+  await expect(input).toBeFocused();                     // フォーカスは入力欄に戻る
+
+  const items = screen.getByRole('list', 'Todos').getByRole('listitem');
+  await expect(items).toHaveCount(1);
+  const checkbox = screen.getByRole('checkbox', 'Buy milk');
+  await expect(checkbox).not.toBeChecked();
+  await checkbox.check();
+  await expect(checkbox).toBeChecked();
+  await expect(screen.getByRole('button', 'Add')).toBeEnabled();
+  await expect(screen.getByRole('heading', 'Todos')).toBeInViewport();
+});
+```
+
+| マッチャー | 対象 |
+| --- | --- |
+| `toHaveValue` | 入力欄の値。文字のマッチャーと違い空白もそのまま比べる。Web では `slider`・`spinbutton`・`progressbar`・`meter`・`scrollbar` など ARIA ウィジェットの `aria-valuetext` / `aria-valuenow` や `<progress>` / `<meter>` の値も読める |
+| `toBeEmpty` | 入力欄・テキストエリアの値が空、または通常要素のトリム後テキストが空（パスワード欄などセキュアフィールドでは `POLICY_DENIED`） |
+| `toHaveCount` | 一致した個数。**複数に一致してもよいマッチャーの代表** |
+| `toBeChecked` / `toBeFocused` / `toBeEnabled` / `toBeDisabled` / `toBeEditable` | 状態 |
+| `toBeVisible` / `toBeHidden` / `toBeAttached` | 見えている / 消えた / 存在する（見えなくてもよい） |
+| `toBeInViewport({ ratio? })` | 要素がビューポート内にあるか（スクロールはしない）。`ratio`（`0`〜`1`）で見えている面積比を指定できる（例: `{ ratio: 0.5 }`） |
+
+第 02 章の「操作はちょうど 1 つに一致」は、`expect` にも当てはまります。`toHaveCount` と、リスト形式の `toHaveText([...])`・`toContainText([...])` だけが複数一致を許す例外です。
+
+### 5. ブラウザのマッチャー
+
+`browser` フィクスチャには、URL・タイトル・クラスのマッチャーがあります。
+
+```ts
+test('browser matchers: url and title', async ({ app, browser, screen }) => {
+  await app.open('/todos');
+  await expect(browser).toHaveURL('/todos');
+  await expect(browser).toHaveTitle(/Todos/);
+  await screen.getByRole('link', 'Billing').tap();
+  await expect(browser).toHaveURL('/login');             // 未ログインなので /login に飛ぶ
+});
+```
+
+**観察ポイント**: `toHaveURL('/todos')` の相対パスは、config の `app.url` を基準に解決されます。公開 URL でもローカルでも同じテストが通るのはこのためです。
+
+### 6. タイムアウトを変える
+
+アプリより短い待ち時間を指定すると失敗します。
+
+```ts
+// わざと失敗するテスト。見たいときだけ test.skip を test に変えて実行する。
+test.skip('a timeout shorter than the app fails', async ({ app, screen }) => {
+  await app.open('/slow');
+  await expect(screen.getByRole('heading', 'Loaded')).toBeVisible({ timeout: 500 });
+});
+```
+
+```text
+ASSERTION_FAILED: expect.toBeVisible failed
+locator: getByRole("heading", name: "Loaded")
+expected: visible
+observed: no node (match count 0)
+```
+
+**観察ポイント**: 失敗ブロックには `expected`（期待）と `observed`（最後に見た状態）が並びます。`observed: no node` は「最後まで見つからなかった」という意味です。
+
+`{ timeout }` は個々の `expect` に付けます。全体を変えるなら config の `assertionTimeout` か、`npx e2e run --assertion-timeout 10000` です。遅い画面に合わせて伸ばすのは構いませんが、「なぜ遅いか」を先に疑ってください。
+
+### 7. 失敗を溜めて最後に報告する: `expect.soft`
+
+ふつうの `expect` は、失敗した時点でテストが止まります。複数の項目を一度に確認したいときは `expect.soft` を使います。
+
+```ts
+// わざと失敗するテスト。expect.soft は失敗を溜めて最後にまとめて報告する。
+test.skip('soft assertions report every failure at once', async ({ app, screen }) => {
+  await app.open('/todos');
+  await expect.soft(screen.getByRole('status')).toHaveText('5 remaining');
+  await expect.soft(screen.getByRole('heading', 'Todos')).toHaveText('Tasks');
+  await expect(screen.getByRole('button', 'Add')).toBeVisible(); // ここまで実行される
+});
+```
+
+```text
+ASSERTION_FAILED: 2 soft assertions failed
+1. expect.toHaveText failed
+   locator: getByRole("status")
+   expected: text "5 remaining"
+   observed: text "0 remaining" (match count 1)
+2. expect.toHaveText failed
+   locator: getByRole("heading", name: "Todos")
+   expected: text "Tasks"
+   observed: text "Todos" (match count 1)
+```
+
+**観察ポイント**: 2 つとも失敗していますが、3 つ目の `expect` まで実行されています。画面の項目を一通り検査するテストで使います。ただし、最初の失敗で後続が意味を失うような流れ（ログインに失敗したのに次へ進む等）には向きません。
+
+### 8. 値やブロックの再試行: `expect.poll` と `expect(fn).toPass()`
+
+ロケータではなく「API の返り値」や「複数の確認をまとめた処理」が条件を満たすまで待ちたいときは、次の 2 つを使います（[第 10 章](/chapters/10-api-testing/)でも活用します）。
+
+```ts
+// 単一の値が変わるのを待つ: expect.poll（intervals でリトライ間隔の配列を指定できる）
+await expect
+  .poll(async () => (await browser.cookies()).map((c) => c.name), {
+    timeout: 5_000,
+    intervals: [100, 250, 500], // 既定は [100, 250, 500, 1000]。最後の値が繰り返される
+  })
+  .toContain('sid');
+
+// 複数の確認を 1 つのブロックとしてまとめて再試行する: expect(fn).toPass()
+await expect(async () => {
+  const status = screen.getByRole('status');
+  await expect(status).toBeVisible({ timeout: 500 });
+  await expect(status).toHaveText('0 remaining', { timeout: 500 });
+}).toPass({ timeout: 5_000, intervals: [100, 250, 500] });
+```
+
+- `expect.poll` の従来の `interval` オプションは非推奨になり、`intervals`（ミリ秒配列）が推奨です。
+- `expect(fn).toPass()` の中では、個々のロケータマッチャーに短めの `timeout` を渡すと、制限時間内に複数回リトライできます。また `expect.poll` も `toPass` も必ず `await` してください（付け忘れると `STEP_NOT_AWAITED` で失敗します）。
+- なお、API レスポンスが 2xx かを確認する `expect(response).toBeOK()` もあります（[第 10 章](/chapters/10-api-testing/)で詳しく扱います）。
+
+### 完成形
+
+```bash
+npx e2e run tests/03-expect
+```
+
+```text
+ ✓ |web| tests/03-expect/expect.e2e.ts (7 tests | 2 skipped)
+      Tests  5 passed | 2 skipped (7)
+```
+
+## 読む
+
+- [expect リファレンス](https://e2e.com/docs/reference/expect): 「Locator matchers」「browser matchers」「Soft assertions」「Polling a value」「Retrying a block」「Behavior」の節。
+- オフライン参照・CLI 補足: `node_modules/e2e/docs/reference/expect.mdx` や `npx e2e guide writing-tests` の「expect」の節も参照できます。
+
+## 自分の言葉で書き直す
+
+`tests/03-expect/ambiguous-status.e2e.ts` を作り、次を満たすテストを書いてください。
+
+1. `/ambiguous` を開く。
+2. `status` が空であることを確認する（ヒント: `toBeEmpty()` または `toHaveText('')`）。
+3. Drafts 側の Delete を押す。
+4. `status` に "Deleted the draft" と出ることと、"published" という文字を**含まない**ことを確認する。
+5. `browser` の URL が `/ambiguous` のままであることを確認する。
+
+`npx e2e run tests/03-expect` で全部通れば合格です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `ASSERTION_FAILED` で `observed: no node` | 待ち時間内に部品が出なかった。ロケータの間違いか、アプリが遅い | 第 02 章の手順でロケータを確認。本当に遅いなら `{ timeout }` |
+| `textContent()` で読んだ値が古い | 読み取りは値の変化を待たない | `expect(ロケータ).toHaveText(...)` に書き換える |
+| `.not` が通るまで 1 秒かかる | 仕様。否定は 1 秒の継続を見る | そのままでよい |
+| `LOCATOR_AMBIGUOUS` が `expect` で出る | 複数に一致した | `toHaveCount` 以外は 1 つに絞る |
+| `expect(await ...)` と `await expect(...)` の違いが分からない | 前者は値（待たない）、後者はロケータ（待つ） | 画面の確認は後者 |
+| `STEP_NOT_AWAITED` | `expect.poll` や `toPass()` の `await` を忘れた | 先頭に `await` を付ける |
+
+## まとめ
+
+- `await expect(ロケータ).マッチャー()` は成り立つまで読み直す（既定 5 秒）。`sleep` は書かない。
+- 読み取り（`textContent()` など）は 1 回きり。値のマッチャー `expect(値)` は待たない。
+- `toBeEmpty`、`toBeInViewport({ ratio })`、ARIA ウィジェット対応の `toHaveValue`、`expect.poll(..., { intervals })`、`expect(fn).toPass()` を使い分ける。
+- `.not` は否定が 1 秒続いて通る。`{ timeout }` で個別に伸ばし、`expect.soft` で失敗を溜められる。
+
+次の[第 04 章: テストの構造](/chapters/04-test-structure/)では、テストファイルの組み立て方（`describe`、フック、並列実行、オンデマンド評価のフィクスチャ、`platforms` 指定）を学びます。

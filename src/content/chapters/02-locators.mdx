@@ -1,0 +1,387 @@
+---
+chapterNumber: "02"
+order: 2
+part: "part-1"
+title: "ロケータ"
+summary: "アクセシビリティツリーを土台に、getByRole を第一選択として画面の部品を指す方法、LOCATOR_AMBIGUOUS や INVALID_LOCATOR の対処、そして blur・連続タップ・インメモリファイル添付まで学びます。"
+modelRequirement: "none"
+estimatedMinutes: 25
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 01 章を終えていること（npx e2e run の出力と trace.md の場所が分かる）"
+solutionFiles:
+  - filename: "login-form.e2e.ts"
+    lang: "ts"
+    sourcePath: "02-locators/login-form.e2e.ts"
+---
+
+## この章で分かること
+
+- 画面の部品を「ロール（役割）と名前」で指す、という考え方。`body` のような雑な指定から卒業する。
+- `getByRole` → `getByLabel` → `getByText` → `getByTestId` という優先順と、それぞれの使いどころ。
+- 一致が多すぎる（`LOCATOR_AMBIGUOUS`）、広すぎる、構文や引数が誤っている（`INVALID_LOCATOR`）といった失敗と、`filter` / `first` / `nth` / スコープで直す方法。
+- `blur()`、`tap({ count })`、インメモリ `setInputFiles({ name, mimeType, buffer })` など実践的なロケータ操作。
+
+## 前提
+
+- [第 01 章](/chapters/01-setup-and-first-run/)を終えていること（`npx e2e run` の出力と `trace.md` の場所が分かる）。
+- モデルは不要です。
+
+## 一緒に書く
+
+この章のテストは `tests/02-locators/locators.e2e.ts` に書き足していきます。
+
+### 1. 画面を「部品の木」として見る
+
+e2e は画面を、HTML ではなく **アクセシビリティツリー**（部品の木）として見ています。スクリーンリーダーが読むのと同じ情報です。`screen.debug()` でその木を印字できます。
+
+```ts
+// tests/02-locators/locators.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('prints the screen tree', async ({ app, screen }) => {
+  await app.open('/todos');
+  await expect(screen.getByRole('heading', 'Todos')).toBeVisible(); // 画面ができるのを待ってから
+  await screen.debug();
+});
+```
+
+```bash
+npx e2e run tests/02-locators/locators.e2e.ts:4
+```
+
+```text
+stdout | |web| tests/02-locators/locators.e2e.ts > prints the screen tree
+#root document "Todos · Todo App"
+ #n2 complementary
+  #n3 link "Todo App" href="/"
+  #n4 navigation "Main"
+   #n5 list
+    #n6 listitem "Home"
+     #n7 link "Home" href="/"
+    #n8 listitem "Todos"
+     #n9 link "Todos" href="/todos"
+    ...
+  #n16 navigation "Components"
+   #n18 list "Forms"
+    #n19 listitem "Form layouts"
+     #n20 link "Form layouts" href="/forms/layouts"
+    ...
+ #n61 banner
+  #n63 combobox "Theme" testid="theme" value="system"
+   #n64 option "System" [selected]
+   ...
+  #n67 testid="auth-status"
+   #n3002 link "Sign in" testid="sign-in-link" href="/login"
+ #n69 main [focused]
+  #n3003 heading "Todos"
+  #n3004 testid="new-todo-form"
+   #n3005 text="New todo"
+   #n3006 textbox "New todo" testid="new-todo-input"
+   #n3007 button "Add" testid="add-todo"
+  #n3008 group "Filter" testid="filters"
+   #n3010 text="All"
+    #n3011 radio "All" [checked]
+   ...
+  #n3017 status "0 remaining" testid="remaining"
+```
+
+**観察ポイント**: 1 行が 1 つの部品で、`ロール "名前" [状態]` の形です。
+
+- `complementary`: 左のサイドバー（`<aside>`）。中に `navigation "Main"` と `navigation "Components"` の 2 つのナビがあり、どちらも `list` と `listitem` でできています。
+- `banner`: 上のヘッダー（`<header>`）。テーマ切替の `combobox` とサインイン状態があります。
+- `main`: ページの本文。テストで触る部品はほぼここにあります。
+- `textbox "New todo"`: 入力欄。名前は `<label>` の文字から来ています。
+- `button "Add"`: ボタン。名前はボタンの文字です。
+- `radio "All" [checked]`: ラジオボタンで、今チェックされている。
+- `status "0 remaining"`: 状態を知らせる領域（`role="status"`）。
+- `testid="…"` は、アプリが `data-testid` 属性で付けた ID です。
+
+ロケータとは、この木の中の 1 行を指す書き方です。**この木に出てくる言葉だけがロケータに使える**、と覚えてください。HTML のクラス名や構造は出てきません。
+
+なぜ `screen.debug()` の前に `expect(...).toBeVisible()` を挟んだか。`screen.debug()` は「今の画面」を待たずに読むので、ページがまだ描画中だと空に近い木が出ます。`expect` は見出しが出るまで待ってくれるので、その後なら完成した木が読めます（[第 03 章](/chapters/03-expect/)で詳しく扱います）。
+
+同じ木はブラウザでも見られます。Chrome で `/todos` を開き、開発者ツール（F12）→ Elements → 右側の Accessibility ペインを開くと、選んだ要素のロールと名前が表示されます。
+
+### 2. ロールと名前で指す
+
+一番よく使う書き方です。`getByRole(ロール, 名前)` を使います。
+
+```ts
+test('role and name: add a todo', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByRole('textbox', 'New todo').fill('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(screen.getByRole('checkbox', 'Buy milk')).toBeVisible();
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+});
+```
+
+**観察ポイント**
+
+- `fill` は入力欄に文字を入れる、`tap` はクリックする（`click` と書いても同じ）。
+- 追加した todo のチェックボックスは、todo の名前がそのまま名前になっています（`checkbox "Buy milk"`）。`<label>` でチェックボックスと文字を包んでいるからです。
+- `getByRole('status')` のように名前を省くと、そのロールの部品を全部指します。この画面に `status` は 1 つなので、これで十分です。
+- 名前は**完全一致**で、大文字小文字も区別します。`'add'` では `button "Add"` に一致しません。部分一致にしたければ `{ exact: false }` か正規表現（`/add/i`）を使います。
+
+`trace.md` の Steps を開くと、`fill textbox "New todo"`、`tap button "Add"` のように、どの部品に何をしたかが残っています。
+
+### 3. 「ロールだけ」は広すぎることがある
+
+`listitem` で todo の数を数えてみます。
+
+```ts
+// わざと失敗するテスト。見たいときだけ test.skip を test に変えて実行する。
+test.skip('listitem without a scope also counts the navigation', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByRole('textbox', 'New todo').fill('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(screen.getByRole('listitem')).toHaveCount(1); // サイドバーの <li> も listitem なので 22 件
+});
+```
+
+`test.skip` を `test` に変えて実行すると、こう失敗します。
+
+```text
+ASSERTION_FAILED: expect.toHaveCount failed
+locator: getByRole("listitem")
+expected: count 1
+observed: count 22 (match count 22)
+```
+
+**観察ポイント**: 木をもう一度見てください。サイドバーの 2 つのナビゲーションにあるリンクも `list` の中の `listitem` です（21 件）。`getByRole('listitem')` は画面全体から探すので、todo の 1 件と合わせて 22 件になりました。
+
+直し方は **スコープ**（探す範囲）を絞ることです。todo の一覧は `list "Todos"` という名前付きのリストなので、まずそれを指し、その中から `listitem` を探します。
+
+```ts
+test('scope to the list first', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByRole('textbox', 'New todo').fill('Buy milk');
+  await screen.getByRole('button', 'Add').tap();
+  const list = screen.getByRole('list', 'Todos');
+  await expect(list.getByRole('listitem')).toHaveCount(1);
+});
+```
+
+ロケータは変数に入れておけます（`const list = …`）。この時点ではまだ画面を探しに行きません。`expect` や `tap` が実行されたときに初めて探します。だから `list` を先に作っておいて、後で何度も使い回せます。
+
+### 4. ほかの指し方: label、text、test id
+
+同じ部品を別の書き方で指してみます。
+
+```ts
+test('label, text and test id reach the same controls', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Walk the dog');
+  await screen.getByTestId('add-todo').tap();
+  await expect(screen.getByText('Walk the dog')).toBeVisible();
+  await expect(screen.getByTestId('remaining')).toHaveText('1 remaining');
+});
+```
+
+| 書き方 | 何を見るか | 使いどころ |
+| --- | --- | --- |
+| `getByRole(role, name)` | ロールと名前 | **第一選択**。ユーザーが見ている通りに指せる |
+| `getByLabel(text)` | フォーム部品のラベル | 入力欄。`getByRole('textbox', name)` とほぼ同じ |
+| `getByPlaceholder(text)` | 入力欄のプレースホルダ | ラベルが無い入力欄 |
+| `getByText(text)` | 見えている文字 | 見出しや文章の確認。ボタンには使わない（ロールで指せる） |
+| `getByTestId(id)` | `data-testid` 属性 | **最後の手段**。ロールも名前も付けられない部品 |
+
+優先順がこうなっている理由は、上に行くほど「ユーザーが見ているもの」に近く、HTML を書き換えても壊れにくいからです。`getByTestId` はアプリ側の協力（属性を付ける）が要り、ユーザーには見えません。
+
+なお、閉じたドロワーや非アクティブなタブのように `display: none` の隠しコピーが DOM に残っている画面では、クエリに `{ visible: true }` を渡すと見えている要素だけに絞れます（例: `screen.getByText('Save', { visible: true })`）。
+
+### 5. 一致が多すぎる: LOCATOR_AMBIGUOUS
+
+`/ambiguous` には "Delete" というボタンが 2 つあります。`tests/02-locators/ambiguous.e2e.ts` を作ります。
+
+```ts
+// tests/02-locators/ambiguous.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+// わざと失敗するテスト。LOCATOR_AMBIGUOUS を見たいときだけ test.skip を test に変えて実行する。
+test.skip('too many matches: this fails with LOCATOR_AMBIGUOUS', async ({ app, screen }) => {
+  await app.open('/ambiguous');
+  await screen.getByRole('button', 'Delete').tap();
+});
+```
+
+```text
+LOCATOR_AMBIGUOUS: locator matched 2 nodes, expected exactly one: getByRole("button", name: "Delete")
+ ❯ tests/02-locators/ambiguous.e2e.ts:7:3
+ ❯ at https://test-automation-practice-app.rymetry.workers.dev/ambiguous
+ ❯ on screen #n3010 button "Delete" testid="delete-draft"
+ ❯ on screen #n3014 button "Delete" testid="delete-published"
+```
+
+**観察ポイント**
+
+- 操作（`tap`、`fill` など）は**ちょうど 1 つ**に一致しないと失敗します。0 件なら `LOCATOR_NOT_FOUND`、2 件以上なら `LOCATOR_AMBIGUOUS`。
+- 失敗ブロックの `❯ on screen` 行が、一致した部品を全部見せてくれます。ここを見れば、どう絞ればよいか分かります。
+
+絞り方は 3 つあります。
+
+```ts
+test('scope by region', async ({ app, screen }) => {
+  await app.open('/ambiguous');
+  await screen.getByRole('region', 'Published').getByRole('button', 'Delete').tap();
+  await expect(screen.getByRole('status')).toHaveText('Deleted the published post');
+});
+
+test('narrow with filter', async ({ app, screen }) => {
+  await app.open('/ambiguous');
+  await screen.getByRole('region').filter({ hasText: 'Drafts' }).getByRole('button', 'Delete').tap();
+  await expect(screen.getByRole('status')).toHaveText('Deleted the draft');
+});
+
+test('fall back to a test id', async ({ app, screen }) => {
+  await app.open('/ambiguous');
+  await screen.getByTestId('delete-published').tap();
+  await expect(screen.getByRole('status')).toHaveText('Deleted the published post');
+});
+```
+
+1. **スコープ**: 外側の部品（`region "Published"`）を先に指し、その中から探す。一番読みやすい。
+2. **`filter({ hasText })`**: 「この文字を含む方」で絞る。`hasText` は部分一致で大文字小文字を区別しません。
+3. **test id**: アプリが ID を付けてくれているなら、それで指す。
+
+### 6. 一覧の中の 1 件を指す: filter、first、nth
+
+実務で一番多いのが「一覧の中のこの行」です。`tests/02-locators/locators.e2e.ts` に追加します。
+
+```ts
+test('scope into one list item with filter', async ({ app, screen }) => {
+  await app.open('/todos');
+  for (const title of ['Buy milk', 'Walk the dog', 'Write the report']) {
+    await screen.getByLabel('New todo').fill(title);
+    await screen.getByRole('button', 'Add').tap();
+  }
+  const list = screen.getByRole('list', 'Todos');
+  await expect(list.getByRole('listitem')).toHaveCount(3);
+
+  const dogItem = list.getByRole('listitem').filter({ hasText: 'Walk the dog' });
+  await dogItem.getByRole('button', 'Delete').tap();
+
+  await expect(list.getByRole('listitem')).toHaveCount(2);
+  await expect(screen.getByText('Walk the dog')).toHaveCount(0);
+});
+```
+
+**観察ポイント**: `list.getByRole('listitem').filter({ hasText: 'Walk the dog' })` は「Todos リストの項目のうち、Walk the dog を含むもの」です。その中の `button "Delete"` を押すので、他の行の Delete は押しません。
+
+順番で指すこともできます。
+
+```ts
+test('first, last and nth pick one of many', async ({ app, screen }) => {
+  await app.open('/todos');
+  for (const title of ['one', 'two', 'three']) {
+    await screen.getByLabel('New todo').fill(title);
+    await screen.getByRole('button', 'Add').tap();
+  }
+  const items = screen.getByRole('list', 'Todos').getByRole('listitem');
+  await items.first().getByRole('checkbox').check();
+  await items.nth(1).getByRole('checkbox').check();
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+  await expect(items.last().getByRole('checkbox')).not.toBeChecked();
+});
+```
+
+`nth` は 0 から数えます（`nth(1)` は 2 番目）。順番で指すのは、並びが変わると壊れるので、`filter` で指せるときはそちらを使ってください。
+
+### 7. グループの名前
+
+`<fieldset>` は `group` というロールになり、`<legend>` の文字が名前になります。
+
+```ts
+test('groups are named by their legend', async ({ app, screen }) => {
+  await app.open('/todos');
+  const filters = screen.getByRole('group', 'Filter');
+  await filters.getByRole('radio', 'Completed').check();
+  await expect(filters.getByRole('radio', 'Completed')).toBeChecked();
+  await expect(screen.getByRole('list', 'Todos').getByRole('listitem')).toHaveCount(0);
+});
+```
+
+どの HTML がどのロールになるかの一覧は [screen リファレンスの Roles on the web](https://e2e.com/docs/reference/screen#roles-on-the-web) にあります。全部覚える必要はありません。迷ったら `screen.debug()` で木を見てください。
+
+### 8. 実務で役立つ操作と `INVALID_LOCATOR`
+
+フォーム検証やアップロードなど、実務で頻出するロケータ操作もここで押さえておきます。
+
+```ts
+// 1. blur(): フォーカスを外してバリデーションを発火させる（Web 専用）
+const email = screen.getByLabel('Email');
+await email.fill('not-an-email');
+await email.blur();
+
+// 2. tap({ count }): 連続タップ（count: 2 は doubleTap() と同等、count: 3 でトリプルクリック）
+await screen.getByText('Shipping address').tap({ count: 3 });
+
+// 3. setInputFiles(): パス指定だけでなくインメモリデータも渡せる（Web 専用、合計 50 MiB 未満）
+await screen.getByLabel('Receipt').setInputFiles({
+  name: 'receipt.txt',
+  mimeType: 'text/plain',
+  buffer: Buffer.from('Receipt total: 12.00'),
+});
+await screen.getByLabel('Receipt').setInputFiles([]); // 空配列で選択をクリア
+```
+
+また、ロケータの書き方自体が誤っている場合（`nth(-1)`、空の `filter({})`、未対応オプション `{ nam: 'Save' }`、あるいは `browser.locator()` に渡した壊れた CSS / XPath セレクタなど）は、`LOCATOR_NOT_FOUND` ではなく **`INVALID_LOCATOR`** エラーで即座に失敗します。要素を探しに行く前にテストコード側のミスを教えてくれるので、修正箇所をすぐ特定できます。
+
+### 完成形
+
+この章を終えると、`tests/02-locators/locators.e2e.ts` に 8 つ（うち 1 つは `test.skip`）、`tests/02-locators/ambiguous.e2e.ts` に 4 つ（うち 1 つは `test.skip`）のテストがあります。
+
+```bash
+npx e2e run tests/02-locators
+```
+
+```text
+ ✓ |web| tests/02-locators/ambiguous.e2e.ts (4 tests | 1 skipped)
+ ✓ |web| tests/02-locators/locators.e2e.ts (8 tests | 1 skipped)
+      Tests  10 passed | 2 skipped (12)
+```
+
+各テストは新しいブラウザで始まり、練習用アプリは訪問者ごとにデータを分けるので、テスト同士が todo を共有することはありません。
+
+## 読む
+
+- [screen and Locator リファレンス](https://e2e.com/docs/reference/screen): 「Queries」「Refinement」「Locator actions」「Match rules」の節。「Roles on the web」は辞書として使います。
+- [Core concepts](https://e2e.com/docs/core-concepts#locators): 「Locators」の節（短めです）。
+- オフライン参照・CLI 補足: `node_modules/e2e/docs/reference/screen.mdx` や `npx e2e guide writing-tests` の「Locators」の節も参照できます。
+
+## 自分の言葉で書き直す
+
+`tests/02-locators/login-form.e2e.ts` を作り、次を満たすテストを書いてください。
+
+1. `/login` を開く。
+2. ラベルで Username 欄と Password 欄を指して、`alice` と `wrong` を入れる。
+3. ロールと名前で Sign in ボタンを押す。
+4. `alert` ロールの部品に "Invalid username or password" と出ていることを確認する。
+
+ヒント: ヘッダーにも "Sign in" という**リンク**があります。ロールを `button` にすれば区別できます。`getByText('Sign in')` だとどうなるか試してみてください。
+
+`npx e2e run tests/02-locators` で全部通れば合格です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `LOCATOR_AMBIGUOUS` | 一致が 2 つ以上 | `❯ on screen` 行を見て、スコープ・`filter`・test id で絞る |
+| `LOCATOR_NOT_FOUND` | 一致が 0。名前の綴り、大文字小文字、ロールの間違い | `screen.debug()` で木を見て、出ている言葉をそのまま使う |
+| `INVALID_LOCATOR` | 引数不正（負の `nth`、未知のオプション）や不正なセレクタ構文 | エラーメッセージに示された引数・セレクタ構文を直す |
+| `toHaveCount` の数が多い | ロールだけで画面全体から探している | 一覧や領域にスコープする |
+| `getByText('Sign in')` が曖昧 | リンクとボタンの両方に同じ文字がある | `getByRole('button', 'Sign in')` のようにロールで指す |
+| `screen.debug()` が空に近い | 描画前に読んだ | 先に `expect(...).toBeVisible()` で待つ |
+
+## まとめ
+
+- 画面は「ロール "名前"」の木。`screen.debug()` でいつでも見られる。
+- `getByRole(role, name)` が第一選択。label → text → test id の順に落とす。
+- 操作はちょうど 1 つに一致させる。多すぎたらスコープ、`filter`、`first` / `nth`。引数やセレクタの誤りは `INVALID_LOCATOR` で弾かれる。
+- `blur()`、`tap({ count })`、インメモリ `setInputFiles({ name, mimeType, buffer })` などの操作も揃っている。
+
+次の[第 03 章: expect](/chapters/03-expect/)では、この章で何気なく使った `expect` を掘り下げます。「アサーションは待つ」という仕組みが、なぜ `sleep` を書かずに済むのかの答えです。

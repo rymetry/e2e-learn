@@ -1,0 +1,262 @@
+---
+chapterNumber: "07"
+order: 7
+part: "part-1"
+title: "リプレイキャッシュ"
+summary: "確認済み agent.act の録画とゼロモデル呼び出し再生、キャッシュ鍵の条件と unique()、--no-cache・--strict-cache（未記録ステップ含む挙動）・e2e cache CLI・費用の見積もりを学びます。"
+modelRequirement: "required"
+estimatedMinutes: 25
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 06 章を終えていること"
+  - "LLM モデルが設定されていること"
+solutionFiles:
+  - filename: "rename.e2e.ts"
+    lang: "ts"
+    sourcePath: "07-replay-cache/rename.e2e.ts"
+---
+
+## この章で分かること
+
+- 通った `act` の操作は**録画**され、次の実行ではモデルを呼ばずに**再生**される。
+- 録画される条件（直後の確認が通ること）と、録画の**鍵**に何が含まれるか。
+- `--no-cache`、`--strict-cache`、モード（`read-write` / `read-only` / `off`）、`e2e cache` コマンド、`.e2e/cache/` をコミットする理由、費用の見積もり。
+
+## 前提
+
+- [第 06 章](/chapters/06-agent-steps/)を終えていること。モデルが必要です。
+
+## 一緒に書く
+
+### 1. 2 回走らせて違いを見る
+
+`tests/07-replay-cache/cache.e2e.ts` を作ります。
+
+```ts
+// tests/07-replay-cache/cache.e2e.ts
+import { describe, test } from '@e2e-dev/web';
+import { expect, unique } from 'e2e';
+
+describe('replay cache', {
+  tags: ['agent'],
+  agentContext: 'After Add, the input clears first and the new todo appears in the Todos list a moment later. Observe the screen again before deciding it did not appear.',
+}, () => {
+  test('a checked act is recorded, then replayed', async ({ app, agent, screen }) => {
+    await app.open('/todos');
+    const result = await agent.act('add a todo named {title}', { params: { title: 'Recorded' } });
+    console.log('cache:', result.cache?.mode, result.cache?.reason ?? '');
+    await expect(screen.getByRole('checkbox', 'Recorded')).toBeVisible(); // この確認が通ると録画される
+  });
+
+  test('an unchecked act runs live every time', async ({ app, agent }) => {
+    await app.open('/todos');
+    const result = await agent.act('add a todo named {title}', { params: { title: 'Unchecked' } });
+    console.log('cache:', result.cache?.mode, result.cache?.reason ?? '');
+    // 直後の expect が無いので、この act は録画されない（テストが通っても確認にはならない）
+  });
+
+  test('unique keeps the key stable while the value changes', async ({ app, agent, screen }) => {
+    await app.open('/todos');
+    const title = unique(`Run ${Date.now()}`); // 毎回違う値だが、キャッシュの鍵には影響しない
+    const result = await agent.act('add a todo named {title}', { params: { title } });
+    console.log('cache:', result.cache?.mode, result.cache?.reason ?? '');
+    await expect(screen.getByRole('list', 'Todos').getByRole('listitem')).toHaveCount(1);
+  });
+});
+```
+
+1 回目を実行します。
+
+```bash
+npx e2e run tests/07-replay-cache
+```
+
+```text
+   ✓ ... a checked act is recorded, then replayed > agent.act "add a todo named {title}" 7.11s · 4 model calls
+cache: missed no-entry
+   ✓ ... an unchecked act runs live every time > agent.act "add a todo named {title}" 7.97s · 4 model calls
+cache: missed no-entry
+   ✓ ... unique keeps the key stable while the value changes > agent.act "add a todo named {title}" 8.35s · 4 model calls
+cache: missed no-entry
+         AI  54.5k tokens · 52% cached · 12 model calls
+      Cache  3 missed · 1 not saved
+```
+
+2 回目を同じコマンドで実行します。
+
+```text
+   ✓ ... a checked act is recorded, then replayed > agent.act "add a todo named {title}" 831ms
+cache: self-finalized
+   ✓ ... an unchecked act runs live every time > agent.act "add a todo named {title}" 7.67s · 4 model calls
+cache: missed no-entry
+   ✓ ... unique keeps the key stable while the value changes > agent.act "add a todo named {title}" 806ms
+cache: self-finalized
+         AI  18.2k tokens · 43% cached · 4 model calls
+      Cache  2 replayed · 1 missed · 1 not saved
+```
+
+**観察ポイント**
+
+- 1 つ目と 3 つ目は 2 回目に **0.8 秒、モデル呼び出し 0 回**になりました（`self-finalized` は「録画を再生して、結果も一致した」）。トークンは 54,500 から 18,200 に減り、残った 18,200 は 2 つ目のテストの分です。
+- 2 つ目は 2 回目も `missed no-entry` です。直後に `expect` が無いので、1 回目に録画されませんでした。`trace.md` には理由が書かれます。
+
+```text
+cache: no replay: nothing recorded for this step yet; recording not saved: no check passed after this step
+```
+
+- 3 つ目は `unique(...)` で毎回違うタイトルを渡していますが、再生されました。`unique` で包んだ値は鍵に入らないからです。
+
+### 2. 何が録画されるか
+
+`.e2e/cache/` に、`act` 1 つにつき 1 つの JSON ができます。`npx e2e cache ls` や `npx e2e cache stats` で一覧とサイズを確認でき、中身もそのまま読めます。
+
+```bash
+npx e2e cache ls
+npx e2e cache stats
+```
+
+JSON の中身も少しだけ覗いてみます。
+
+```bash
+node -e "const f=require('fs').readdirSync('.e2e/cache')[0]; console.log(JSON.stringify(require('./.e2e/cache/'+f).payload, null, 1).slice(0, 900))"
+```
+
+```json
+{
+ "actions": [
+  { "name": "type", "summary": "type \"Recorded\" into textbox \"New todo\"",
+    "target": { "role": "textbox", "name": "New todo", "testId": "new-todo-input" }, "value": "Recorded" },
+  { "name": "tap", "summary": "tap button \"Add\"",
+    "target": { "role": "button", "name": "Add", "testId": "add-todo" } }
+ ],
+ "recordedFor": { "testId": "tests/07-replay-cache/cache.e2e.ts::replay cache::a checked act ...", "targetId": "web", "instructionDigest": "...", "paramsDigest": "...", "agent": "default" },
+ "recordedBy": { "provider": "chatgpt.responses", "model": "gpt-6-luna" },
+ "startPath": "/todos", "endPath": "/todos"
+}
+```
+
+**観察ポイント**
+
+- 録画は「操作の列」です。操作の対象は**ロールと名前と test id**で覚えています。再生時はこれで部品を探し直すので、HTML が多少変わっても、名前が同じなら再生できます。
+- `recordedFor` が**鍵**です。テストファイルとテスト名、ターゲット、ゴールの文（`instructionDigest`）、`params` の値（`paramsDigest`）、agent の名前（と `context`、`agentContext`）が含まれます。**このどれかを変えると別の鍵になり、録画し直し**です。テスト名を変えるだけで、そのテストの全ゴールが再録画されます。
+- モデルを変更したりエンジンを更新したりしても、キャッシュは無効化されません。
+- `startPath` / `endPath` は、再生できる条件です。録画時と違うページで始まると再生しません。
+
+### 3. 再生の仕組みと、再生できないとき、`--strict-cache`
+
+再生は、録画した操作を順に実行し、終わった画面が録画時と一致するか（出た部品、消えた部品、URL）を見ます。一致しなければ、**その場からモデルが引き継ぎます**（hand-off）。失敗にはなりません。`result.cache.reason` と `trace.md` に理由が出ます。
+
+| `reason` | 意味 |
+| --- | --- |
+| `no-entry` | 録画が無い（初回、または鍵が変わった） |
+| `wrong-context` | 録画時と違うページで始まった |
+| `target-not-found` / `target-ambiguous` | 録画した部品が見つからない / 複数ある |
+| `end-mismatch` | 操作後の画面が録画時と違う |
+| `gap` / `truncated` | 毎回変化する画面読み取り値や mutating ツールを含む、または操作数・サイズ上限に達した |
+
+アプリが変わって再生できなくなると、毎回モデルが引き継いで費用がかかります。気付かずに放置しないために、CI では `--strict-cache`（または `e2e.config.ts` の `cache: { strict: true }`）を付けて **`REPLAY_STALE`**（終了コード 2、リトライなし）で失敗させる運用があります（[第 12 章](/chapters/12-ci-and-reporters/)）。
+
+`--strict-cache` には次の重要な挙動があります。
+
+- **既存の録画が壊れた / 鍵が変わった場合**: モデルを呼ばず `REPLAY_STALE` で即失敗します。またキャッシュファイルの書き込みも削除も行いません（ファイルストアでは、同じステップの別鍵の録画が残っている場合も検出して `REPLAY_STALE` にします）。
+- **まだ一度も録画されていない未記録ステップ、または `gap` / `truncated` な録画**: `--strict-cache` 下でも失敗させず、通常どおりライブ実行されます。新しく追加したばかりのステップやそもそも再生不可能なステップで開発が止まらないための設計です。
+
+### 4. `assert` / `waitFor` / `extract` は録画されない
+
+[第 06 章](/chapters/06-agent-steps/)で触れたとおり、これらは毎回モデルを呼びます。「判断」は録画できないからです。
+
+| 呼び出し | 2 回目以降の費用 |
+| --- | --- |
+| `act` + 直後の確認（`expect(locator)`、`expect(browser)`、`locator.waitFor()`、`agent.assert` 等） | ほぼ 0（再生） |
+| `act` のみ（直後の確認無し） | 毎回フル |
+| `assert` / `extract` | 毎回 1〜2 回のモデル呼び出し |
+| `waitFor` | 画面が変わるたびに 1 回 |
+| `expect` / `screen` の操作 | 0（モデルを使わない） |
+
+なお、確認として認められるのはロケータ・ブラウザのアサーションや `waitFor`、`agent.assert` / `agent.waitFor` です。素の値に対する `expect(value).toBe(...)` や `expect.poll(...)`、`agent.extract(...)` だけでは録画の確認にはなりません。
+
+費用を抑える順番は、「`expect` で書けることは `expect` で」→「`act` には直後に `expect`」→「`assert` は本当に判断が要るところだけ」です。
+
+### 5. モードと `--no-cache`
+
+| モード | 再生 | 録画 | 既定 |
+| --- | --- | --- | --- |
+| `read-write` | する | する | ローカル |
+| `read-only` | する | しない | CI（`cache` 未設定のとき） |
+| `off` | しない | しない | `--no-cache` を付けた実行 |
+
+```bash
+npx e2e run tests/07-replay-cache --no-cache
+```
+
+**観察ポイント**: 全部ライブで走り、既存の録画は書き換えません。使うのは次の 2 つの場面です。
+
+- 「再生が古いせいで通っているのでは」を疑うとき（[第 08 章](/chapters/08-debugging/)）。
+- テストを直し終えた後、1 回だけライブで通して「モデルでも到達できる」ことを確かめるとき。
+
+テストを**直している最中**は `--no-cache` を付けないでください。通った `act` の再生が効かなくなり、1 回の修正ごとに全ゴールの費用がかかります。同じ理由で、直している最中にテスト名やゴールの文を変えないでください（鍵が変わって再録画になります）。
+
+複数の worktree やチェックアウト間でキャッシュを共有したい場合は、`E2E_CACHE_DIR=~/.cache/my-app/e2e` や `--cache-dir` で保存先を 1 か所にまとめられます。
+
+### 6. `.e2e/cache/` をコミットする
+
+`e2e init` は `.gitignore` に `.e2e/cache/` を追加しますが、チームや CI と録画を共有したいときはその行を外してコミットします。
+
+- CI は既定で `read-only` なので、録画が再生できる限りモデルを呼びません。
+- 再生で通ったテストは録画を書き換えません。ファイルが変わるのは、初めて録画したとき、hand-off で修復された後、録画が削除されたときだけです。
+- 録画は**テストデータ**として扱い、録画し直した PR で差分をレビューします（シークレット以外の入力文字列はそのまま保存されるため、機密値を直書きしていないかも確認します）。
+
+### 7. 費用の目安と CI でのプロバイダ選び
+
+この章の 1 回目は 12 回のモデル呼び出しで 54,500 トークンでした。サブスクリプション（ChatGPT、GitHub Copilot、OpenCode Console、SuperGrok の `spacexsi`）ではローカルでのトークン課金を抑えられますが、CI では基本的に API キーを使います（Vercel AI Gateway、OpenRouter、Anthropic、OpenAI、OpenCode Console の `OPENCODE_API_KEY` など）。
+
+- `act` 1 回: 4 回前後のモデル呼び出し、15,000〜20,000 トークン（画面の大きさで変わる）。
+- `assert` / `extract` 1 回: 1,000〜2,000 トークン。
+- 録画が効いた `act`: 0。
+
+`--debug` を付けると、ステップごとのトークン数と、プロバイダ側でキャッシュされた入力の割合（`cached`）が表で出ます（[第 08 章](/chapters/08-debugging/)）。
+
+### 完成形
+
+```bash
+npx e2e run tests/07-replay-cache
+```
+
+2 回目以降は `Cache 2 replayed · 1 missed · 1 not saved` で、3 つとも通ります。キャッシュを空にして最初から試したいときは `npx e2e cache clear` を使います。
+
+## 読む
+
+- [Caching ガイド](https://e2e.com/docs/cache): 「When a recording is written」「What must match」「Why a step was not replayed」「Commit the replay cache」「Fail on a stale recording」。
+- [Subscriptions ガイド](https://e2e.com/docs/subscriptions): サブスクリプション（`openai`、`github-copilot`、`opencode-console`、`spacexsi`）と CI の制約。
+- [CLI リファレンス（e2e cache）](https://e2e.com/docs/reference/cli#e2e-cache): `ls`、`stats`、`clear` の使い方。
+- オフライン参照・CLI 補足: `node_modules/e2e/docs/cache.mdx` や `npx e2e guide agent` の「The replay cache」も参照できます。
+
+## 自分の言葉で書き直す
+
+`tests/07-replay-cache/rename.e2e.ts` を作り、次を試してください（コードは第 06 章の 1 つ目のテストとほぼ同じで構いません）。
+
+1. `act` + `expect` のテストを書き、2 回走らせて 2 回目が `self-finalized` になることを確認する。
+2. **テスト名だけ**を変えて走らせ、`missed no-entry` に戻ることを確認する。
+3. 名前を戻し、今度は **`params` の値だけ**を変えて走らせ、同じく `missed` になることを確認する。
+4. 手元のメモに「キャッシュの鍵に入るもの」を自分の言葉でまとめる。
+
+この演習は「変えて走らせて見る」ことが本体です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| 毎回 `missed no-entry` | 直後に確認（`expect(locator)` 等）が無い、または毎回鍵が変わる（`Date.now()` を `unique` で包んでいない等） | `expect` を置く。毎回変わる値は `unique()` |
+| 直したのに古い挙動で通る | 再生されている | `--no-cache` で 1 回確認 |
+| `REPLAY_STALE` | `--strict-cache` 下で既存録画の UI または鍵が変わった | ローカルで `read-write`（`--strict-cache` 無し）で走らせて録画し直し、コミット |
+| テスト名を変えたら遅くなった | 鍵が変わって再録画 | 仕様。名前は最初に決める |
+
+## まとめ
+
+- `act` + 直後の確認（`expect(locator)` 等）で録画、次回は再生。`assert` 系は毎回モデルを呼ぶ。
+- 鍵はテスト名・ファイル・ゴールの文・`params`・agent。毎回変わる値は `unique()` で包む。
+- 再生できないときはモデルが引き継ぐ。CI では `--strict-cache` で古い録画の陳腐化を検知できる（未記録ステップはライブ実行される）。
+- `--no-cache` は「疑うとき」と「仕上げの 1 回」だけ。`.e2e/cache/` はコミットして共有できる。
+
+次の[第 08 章: デバッグ](/chapters/08-debugging/)では、失敗したテストの読み解き方（失敗ブロック、`trace.md`、エラーコード、`--headed` / `--debug` / `--step` / `screen.pause()`）を扱います。

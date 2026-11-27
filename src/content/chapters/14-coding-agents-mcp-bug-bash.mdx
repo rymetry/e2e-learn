@@ -1,0 +1,270 @@
+---
+chapterNumber: "14"
+order: 14
+part: "part-1"
+title: "コーディングエージェント、MCP、bug bash"
+summary: "同梱 skill、e2e mcp（locate / 刷新された run_code / open_session の path と attach）、並列探索の bug bash、そしてエージェントが書いたテストのレビュー基準を学びます。"
+modelRequirement: "partial"
+estimatedMinutes: 40
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "13-explore"
+solutionFiles:
+  - filename: "billing-by-agent.e2e.ts"
+    lang: "ts"
+    sourcePath: "14-coding-agents-mcp-bug-bash/billing-by-agent.e2e.ts"
+---
+
+## この章で分かること
+
+- `e2e init` が配置する**同梱 skill**（`.agents/skills/e2e/`）と `AGENTS.md` / `CLAUDE.md` への自動追記。
+- **`e2e mcp`（`e2e@0.25.0`）**: 生きたアプリを見てロケータを試し、`run_code` で任意の JavaScript を実行し、`open_session` の `path` / `test` / `attach` を使い分ける仕組み。
+- **bug bash**: 複数の `e2e explore` を並列に走らせ、finding ごとに再現テストで証明させる運用。
+- エージェントが書いたテストを、第 02〜11 章で学んだ基準で**レビューして直す**。これが Part 1 の到達点です。
+
+## 前提
+
+- 第 13 章までを終えていること。
+- Claude Code（または Codex / Cursor / OpenCode）が使えること。この章の手順は Claude Code を例にします。
+- モデル: `e2e mcp` 自体にモデルは不要です。エージェントにテストを書かせる・bug bash をさせる部分は、エージェント側のモデルと、e2e 側のモデル（第 06 章）の両方を使います。
+
+## 一緒に書く
+
+### 1. 同梱 skill と `AGENTS.md` / `CLAUDE.md` の自動追記
+
+`e2e init` は、コーディングエージェント向けの手引きをプロジェクトに配置します。
+
+```text
+.agents/skills/e2e/SKILL.md            ← 入口。「何をするときにどの reference を読むか」の表
+.agents/skills/e2e/references/
+  setup.md  writing-tests.md  agent.md  running.md  debugging.md  mcp.md  explore.md  bug-bash.md
+.claude/skills/e2e                     ← Claude Code 用。.agents/skills/e2e へのシンボリックリンク
+.mcp.json                              ← Claude Code に e2e mcp サーバーを登録する設定
+AGENTS.md / CLAUDE.md                  ← skill を読むよう誘導する 1 行が自動で追記される
+```
+
+`e2e@0.25.0` の `e2e init` は、`.agents/skills` を選ぶと `AGENTS.md` に、`.claude/skills` を選ぶと `CLAUDE.md` に次の 1 行を自動追記します（ファイルが無ければ新規作成、既存の本文は維持されます）。
+
+```md
+End-to-end tests use e2e; read .agents/skills/e2e/SKILL.md before writing or running one.
+```
+
+`SKILL.md` を開いてみてください。あなたが第 01〜13 章で学んだことが、エージェント向けに凝縮されています。
+
+- 「Workflow: writing a test」: 既存の config とテストを見る → 画面を知る（`--headed` か MCP）→ `act` は 1 ゴールずつ、直後に `expect` → `file:line` で 1 つだけ実行 → 失敗は trace から直す。
+- 「Rerunning a test while you fix it」: `--action-timeout 5000`、キャッシュを切らない、テスト名とゴールを変えない。
+- 「Rules」: `npx e2e ...` で実行、秘密は `credentials` / `secrets`、ゴールは原子的、1 ゴールに 1 チェック、`.e2e/` は読むだけ。
+
+同じ内容は `npx e2e guide <topic>` でも読めます。`e2e` を上げたら `npx e2e upgrade` でパッケージと一緒に skill のコピーも更新されます。
+
+### 2. MCP サーバーでアプリを「見せる」
+
+`.mcp.json` が Claude Code に `e2e mcp` を登録しています（Cursor なら `.cursor/mcp.json`、Codex なら `.codex/config.toml`、OpenCode なら `opencode.json`）。
+
+```json
+{ "mcpServers": { "e2e": { "command": "npx", "args": ["e2e", "mcp"] } } }
+```
+
+Codex で使う場合は、プロジェクトルートで `npx e2e init --yes --skills none --mcp .codex/config.toml` を実行して信頼するプロジェクトとして開き直し、`codex mcp list` で登録を確認してください。以下の例では引き続き Claude Code を使います。
+
+`my-e2e-hands-on/` で Claude Code を起動すると、`open_session` / `tools` / `call` / `close_session` の 4 つの MCP ツールが使えます。サーバーにモデルは要りません。
+
+> **重要（`0.24.0` の破壊的変更）: `run_tests` ツールは削除されました**
+> 以前のバージョンにあった MCP 内の `run_tests` ツールは `0.24.0` で削除されました。テストスイートの実行は通常のシェルコマンド **`npx e2e run`** を使います。1 つの失敗テストを再現してその画面で止めたいときは、後述の `open_session { test: "file:line" }` を使います。
+
+エージェントが `open_session` すると、config の `app` がブラウザで開き、画面が「ロールと名前の木」として返ります。
+
+```text
+Session 01a185fa-… open on target "web" (platform web, engine web 0.17.0), headless; config …/e2e.config.ts.
+App: https://test-automation-practice-app.…workers.dev/.
+Credentials: "alice" (username "alice", password secret "alice.password"). Type the username with type; fill the password with type_secret and its password secret's name.
+Tools (run one with call {tool, args}):
+- observe: Look at the whole current screen ... [read-only]
+- tap {target, modifiers?}: Tap or click one node ...
+- type {target?, value, replace?}: Type a plain-text value into one input node ...
+- navigate {url}: Navigate to a URL or an app-relative path.
+- type_secret {target, name}: Fill one declared secret into an input by its name; the plaintext never passes through you.
+- locate {role?, name?, text?, label?, placeholder?, testId?, exact?}: Try a semantic locator against the live screen before writing it into a test ...
+- run_code {code, timeout?}: Run JavaScript on the live session ...
+- test_lines: Every test line this session's actions printed so far ...
+```
+
+**観察ポイント**
+
+- `Credentials: "alice" (... password secret "alice.password")` とあり、エージェントはパスワードの値を見ず、`type_secret` で名前を指定して埋めさせます（第 09 章）。
+- エージェントがロケータを**書く前に試せる**のが `locate` です。
+
+```text
+call {tool: "locate", args: {role: "button", name: "Add"}}
+→ 1 node matches getByRole("button", name: "Add").
+  Use: screen.getByRole("button", "Add")
+
+call {tool: "locate", args: {label: "Email"}}
+→ 0 nodes match getByLabel("Email").
+  A test using this locator would fail with LOCATOR_NOT_FOUND. Check the accessible name in the observation (observe), or loosen the match with exact: false.
+```
+
+操作のたびに**その操作を再現するテストの 1 行**が返ります。
+
+```text
+call {tool: "navigate", args: {url: "/todos"}}
+→ Navigated to /todos.
+  Test line: await app.open("/todos");
+
+call {tool: "tap", args: {target: "n24006"}}
+→ Tapped #n24006.
+  Test line: await screen.getByRole("button", "Add").tap();
+
+call {tool: "test_lines"}
+→ Draft test body from this session's actions, in order (3 lines):
+  await app.open();
+  await app.open("/todos");
+  await screen.getByRole("button", "Add").tap();
+```
+
+`Test line:` のロケータは、その瞬間の画面で**その 1 つだけ**に一致することを確かめた上で書かれています（ロールと名前が第一、test id は最後、双子がいれば `.nth()` やコンテナで絞る）。
+
+#### `open_session` の拡張オプション（`path` / `test` / `attach`）
+
+`e2e@0.25.0` では、`open_session` でセッションの始め方を細かく選べます。
+
+| オプション | 例 | 用途 |
+| --- | --- | --- |
+| `path` | `open_session { path: "/settings/billing" }` | ルートではなく指定パスを直接開いて開始する（`test` とは併用不可） |
+| `test` | `open_session { test: "tests/09-authentication/billing.e2e.ts:13" }` | 1 テストを実行し、失敗した画面（または終了時点）でセッションを引き継ぐ |
+| `attach` | `open_session { attach: "k3f9" }` | 第 08 章の `screen.pause()` や `e2e run --step` で停止中のテストにアタッチする（`attach` だけを渡す。`close_session` でテストを停止したままデタッチ） |
+| `engine` + `app` | `open_session { engine: "@e2e-dev/web", app: { url: "http://localhost:3000" } }` | config がまだ無いディレクトリで画面だけ確認する |
+
+#### 全面刷新された `run_code`（`0.25.0`）
+
+`e2e@0.25.0` で `run_code` が全面刷新され、**ライブセッション上で任意の非同期 JavaScript** を実行できるようになりました。
+
+```js
+// call { tool: "run_code", args: { code: "..." } } の中で実行する例
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Milk'))).getByRole('checkbox').check();
+await expect(screen.getByRole('status')).toHaveText('0 remaining');
+return names.length;
+```
+
+**`run_code` の重要ルール**
+
+- **スコープ内のオブジェクト**: テスト本体と同じ `screen`、`app`、`expect`、`credentials`、`secrets`、`services`、`console`、およびエンジンのフィクスチャ（`browser` または `device`。ただし `attach` セッションではエンジンフィクスチャ無し）が使えます。
+- **変数・ループ・`try/catch`・`return`・`console.log`**: 通常の async 関数本体として動き、`return` した JSON 値と `console.log` の出力がエージェントへ返ります。
+- **`await` が必須**: `await` を付けない行は並列に走り出して順序が崩れます。非同期の操作や `expect` には必ず `await` を付けます。
+- **`test_lines` への自動追加**: 成功した行（単なる読み取りを除く）はそのまま `test_lines` のドラフトに加わります。
+- **権限とセキュリティ**: `run_code` はサンドボックス化されておらず、**テストファイルと同等の権限**（Node.js プロセス内でのモジュール `import` やファイル読み取りなど）を持ち、`e2e mcp` では既定で有効です。信頼できるワークスペース・エージェントと組み合わせて使ってください。
+
+### 3. エージェントにテストを書かせてレビューする
+
+Claude Code で `my-e2e-hands-on/` を開き、こう頼みます。
+
+```text
+Write an e2e test for upgrading to the Pro plan on the billing page, signed in as alice. Write it while you walk the flow in the app with the e2e MCP server. Put it in tests/14-coding-agents-mcp-bug-bash/billing-by-agent.e2e.ts.
+```
+
+エージェントは skill を読み、テストファイルを作ってから `open_session` で画面を歩き、操作ごとの `Test line:` や `run_code` で確かめた `expect` を書き足します。書けたら `npx e2e run tests/14-coding-agents-mcp-bug-bash/billing-by-agent.e2e.ts:<行> --action-timeout 5000` で通るまで直します。失敗すれば、第 08 章と同じく失敗ブロックと `trace.md` を読むか、`open_session { test: "<ファイル>:<行>" }` や `--step` + `open_session { attach }` で画面を確認して直します。
+
+できたテストを、**あなたが**レビューします。これが Part 1 で身に付けた力の使いどころです。
+
+| 見るところ | 基準 | 章 |
+| --- | --- | --- |
+| ロケータ | `getByRole(role, name)` が第一選択か。`getByText` でボタンを指していないか。test id は最後か | 02 |
+| 待ち方 | `sleep` が無いか。読み取り（`textContent`）で値の変化を待っていないか | 03, 08 |
+| 構造 | 共通の準備は `beforeEach` かフィクスチャか。`describe` の本体が同期か。ターゲット絞り込みに廃止済みの `requires` ではなく `platforms` を使っているか | 04 |
+| ゴール | `act` は 1 ゴール 1 結果か。直後に `expect` があるか。値は `params` か。画面の言葉か | 06 |
+| キャッシュ | `act` の後の確認がロケータの `expect` か（値の `expect` では録画されない） | 07 |
+| 認証 | ログインは `session: 'alice'` か。パスワードを文字列で書いていないか | 09 |
+| API 呼び出し | 生 `fetch` ではなく組み込みの `request` フィクスチャと `expect(res).toBeOK()` を使っているか | 10 |
+| タグ | モデルを使うなら `tags: ['agent']` が付いているか | 06, 12 |
+| 判定の分担 | 「無いこと」を `agent.assert` に聞いていないか。厳密に書けることを `assert` に任せていないか | 06 |
+
+直すべき点があれば、直してから「なぜそう直すか」をエージェントに伝えてください。skill に書かれていないプロジェクト固有のルールは、`AGENTS.md`（または `CLAUDE.md`）に書き足します。
+
+### 4. bug bash
+
+bug bash は、第 13 章の探索を**複数の観点で並列に**走らせ、finding ごとに再現テストで証明する運用です。docs 上はコーディングエージェントが行う手順として定義されています。
+
+```text
+Bug bash the todo list, sign-in and billing pages of this app.
+```
+
+エージェントがすることは、`npx e2e guide bug-bash` の手順どおりです。
+
+1. アプリのルートを読む（ブランチなら差分も）。
+2. **charter**（観点）を 5〜10 個書く。1 文のゴール × 1 つの立場（初めてのユーザー、数字と文言、端の入力、リロード後の状態、エラー経路）。
+3. charter ごとに `e2e explore` を、4 つ並列、`--agent`（ペルソナ）と `--output`（結果の置き場）を分けて走らせる。
+4. finding をマージし、原因が分かっているもの（探索の限界、ローカル環境、意図した設計、seed データ）を除く。
+5. 残った finding ごとに、**期待する振る舞いを assert する再現テスト**を書く（`tags: ['bugbash']`）。
+6. 再現テストを走らせ、`ASSERTION_FAILED` になったものだけを不具合として報告する。
+7. 報告は「確認した不具合」「ローカルで確かめられない本番のリスク」「却下した finding と理由」「warning」の順。
+
+第 13 章で手でやったことを、エージェントが並列に、証明付きでやる、と理解してください。
+
+bug bash の前に確かめることが 2 つあります。
+
+- アプリが**同時に複数の探索者**を受けられるか。練習用アプリは訪問者ごとにセッションが分かれるので問題ありません。自分のアプリで `app.command` を使うなら `reuseExisting: true`、またはポート `0` で探索ごとに起動させます。
+- **公開されていて他人が使うアプリでは、データを変える探索をしない**。
+
+再現テストは直るまで失敗するので、マージを止める通常の実行からは外します。
+
+```bash
+npx e2e run --exclude-tag bugbash
+```
+
+直ったら `bugbash` タグを外し、回帰テストとして残します。
+
+### 5. Claude Code / Codex / Cursor のプラグイン（任意）
+
+skill は `e2e init` でプロジェクトごとに置かれますが、プラグインとして入れると全プロジェクトで使えます。
+
+```bash
+# Claude Code
+claude plugin marketplace add e2e-inc/e2e
+claude plugin install e2e@e2e
+
+# Codex
+codex plugin marketplace add e2e-inc/e2e
+codex plugin add e2e@e2e
+```
+
+`e2e`、`create-verification-skill`、`migrate-to-e2e` の 3 つの skill が入ります。`create-verification-skill` は「このアプリの変更を確認する手順」を skill として書き出すもの、`migrate-to-e2e` は Playwright など既存スイートからの段階的移行です。詳しくは [Coding agents](https://e2e.com/docs/coding-agents) を読んでください。
+
+## 読む
+
+- `.agents/skills/e2e/SKILL.md` と `references/mcp.md`、`references/bug-bash.md`: この章の本体。
+- [Coding agents](https://e2e.com/docs/coding-agents)（公式ドキュメント）: skill・プラグインの入れ方、エージェントがテストを書く流れ、失敗の読み方。
+- [MCP server](https://e2e.com/docs/mcp-server): 「Why it matters」「How it writes a test line」「How it runs code」「Fix a failing test」。
+- [MCP server リファレンス](https://e2e.com/docs/reference/mcp): `open_session`（`path` / `test` / `attach`）、`run_code`、エラーコード一覧。
+- [Bug bashes](https://e2e.com/docs/bug-bash): 全部。
+
+## 自分の言葉で書き直す
+
+1. Claude Code（または Codex / Cursor）に、第 3 節のプロンプトで billing のテストを書かせる。
+2. できたテストを上のレビュー表でチェックし、直す点を手元のメモに列挙する（無ければ「無し」と、その理由）。
+3. 直したテストを `tests/14-coding-agents-mcp-bug-bash/billing-by-agent.e2e.ts` として残し、`npx e2e run tests/14-coding-agents-mcp-bug-bash` で通す。
+
+ページ下部の『模範解答を見る』（`billing-by-agent.e2e.ts`）に、レビュー後の形の一例があります。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| エージェントが `run_tests` を呼ぼうとして失敗する | `run_tests` は `e2e@0.24.0` で削除された | `npx e2e upgrade` で古い skill を更新し、テスト実行は `npx e2e run` を使う |
+| Claude Code に `mcp__e2e__*` が出ない | `.mcp.json` のあるフォルダで起動していない、または承認していない | プロジェクトルートで起動し、MCP サーバーの承認に答える |
+| `open_session` が `CONFIG_NOT_FOUND` | config のないフォルダで `engine` を指定していない | プロジェクトルートで開くか、`open_session { engine: "@e2e-dev/web", app: { url: "..." } }` を使う |
+| `APP_ALREADY_RUNNING` でテスト実行 | セッションが起動したアプリと、テストが起動するアプリが衝突 | `reuseExisting: true` またはポート `0` を使う |
+| `run_code` の操作順序が崩れる | `await` を付けずに複数ステップを書いた | すべての非同期ステップに `await` を付ける |
+| エージェントが `sleep` を書く | skill を読んでいない | `AGENTS.md` / `CLAUDE.md` の 1 行を確認し、skill を読むよう指示 |
+
+## まとめ
+
+- skill がエージェントの「教科書」。`e2e init` が配置し、`AGENTS.md` / `CLAUDE.md` に参照行も自動で追記する。
+- `e2e mcp` でエージェントは画面を見て、`locate` でロケータを試し、`run_code` で任意の JS を動かし、`Test line:` を受け取る（`run_tests` は廃止、テスト実行は `npx e2e run`）。
+- `open_session` は `path`、`test`、`attach`（停止中テストへのアタッチ）をサポートする。
+- bug bash は並列の探索 + 再現テストでの証明。確認した不具合だけを報告する。
+- エージェントが書いたテストは、第 02〜11 章の基準でレビューする。それができる人が、このフレームワークのエキスパートです。
+
+これで Part 1 は終わりです。残りの機能と最新エコシステム（プロジェクトツール、decision model、環境変数、telemetry、runner API、`@e2e-dev/core`、`@e2e-dev/desktop`、`services` など）は付録 A で補います。

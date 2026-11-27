@@ -12,12 +12,8 @@ export default defineConfig({
   },
   integrations: [
     // expressiveCode は mdx より前に配置しないと MDX 内コードブロックに適用されない
-    expressiveCode({
-      themes: ['github-light', 'github-dark'],
-      useDarkModeMediaQuery: false,
-      themeCssRoot: 'html',
-      themeCssSelector: (theme) => `[data-theme="${theme.type}"]`,
-    }),
+    // オプションは <Code> コンポーネント対応のため ec.config.mjs へ分離
+    expressiveCode(),
     mdx(),
     sitemap(),
   ],

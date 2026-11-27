@@ -1,0 +1,462 @@
+---
+interface StageMode {
+  id: 'locator' | 'agent' | 'replay';
+  label: string;
+  filename: string;
+  metric: string;
+  command: string;
+  code: string;
+  terminalLines: Array<{
+    text: string;
+    tone?: 'pass' | 'agent' | 'muted' | 'primary';
+  }>;
+  traceTitle: string;
+  traceLines: string[];
+}
+
+const modes: StageMode[] = [
+  {
+    id: 'locator',
+    label: 'ロケータ',
+    filename: 'tests/02-locators/todo.e2e.ts',
+    metric: '0 tokens',
+    command: 'npx e2e run tests/02-locators',
+    code: `import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('Todo を追加して一覧に表示する', async ({ app, screen }) => {
+  await app.open('/todos');
+  await screen.getByLabel('新しいタスク').fill('デプロイ手順を確認');
+  await screen.getByRole('button', { name: '追加' }).tap();
+
+  await expect(
+    screen.getByRole('listitem', { name: 'デプロイ手順を確認' }),
+  ).toBeVisible();
+});`,
+    terminalLines: [
+      { text: '$ npx e2e run tests/02-locators', tone: 'muted' },
+      { text: 'RUN  e2e v0.25.0 · targets: web', tone: 'muted' },
+      { text: ' ✓ |web| tests/02-locators/todo.e2e.ts (1 test) 920ms', tone: 'pass' },
+      { text: 'Tests  1 passed (1) | model: none | 0 tokens', tone: 'primary' },
+    ],
+    traceTitle: 'trace.md (抜粋)',
+    traceLines: [
+      'step 1: app.open("/todos") -> 140ms',
+      'step 2: getByLabel(...).fill(...) -> 18ms',
+      'step 3: expect(...).toBeVisible() -> pass',
+    ],
+  },
+  {
+    id: 'agent',
+    label: 'AI Agent',
+    filename: 'tests/06-agent-steps/checkout.e2e.ts',
+    metric: '1,420 tokens',
+    command: 'npx e2e run tests/06-agent-steps',
+    code: `import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { z } from 'zod';
+
+test('AI Agent で購入フローを検証する', async ({ app, agent }) => {
+  await app.open('/shop');
+  await agent.act('在庫ありの商品を 1 件カートへ追加し、確認画面へ進む');
+  await agent.assert('注文確認画面に小計と確定ボタンが表示されている');
+
+  const total = await agent.extract('小計の金額を数値で取得', z.number());
+  expect(total).toBeGreaterThan(0);
+});`,
+    terminalLines: [
+      { text: '$ npx e2e run tests/06-agent-steps', tone: 'muted' },
+      { text: '[agent] act: 3 actions -> .e2e/cache/', tone: 'agent' },
+      { text: ' ✓ |web| checkout.e2e.ts (1 test) 4.8s', tone: 'pass' },
+      { text: 'Tests  1 passed (1) | 1,420 tokens', tone: 'primary' },
+    ],
+    traceTitle: 'trace.md (抜粋)',
+    traceLines: [
+      'act -> button "カートに追加" -> link "購入手続き"',
+      'assert -> 小計 ¥2,400 / "注文を確定" を確認',
+      'cache -> .e2e/cache/checkout.json 保存',
+    ],
+  },
+  {
+    id: 'replay',
+    label: 'リプレイ',
+    filename: 'tests/07-replay-cache/checkout.e2e.ts',
+    metric: '0 tokens (cache hit)',
+    command: 'npx e2e run tests/07-replay-cache --strict-cache',
+    code: `import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('キャッシュ済み手順をモデル無しで再生する', async ({ app, screen, agent }) => {
+  await app.open('/shop');
+  // --strict-cache では保存済みの agent.act 手順のみを高速リプレイ
+  await agent.act('在庫ありの商品を 1 件カートへ追加し、確認画面へ進む');
+
+  await expect(screen.getByRole('button', { name: '注文を確定' })).toBeEnabled();
+});`,
+    terminalLines: [
+      { text: '$ npx e2e run tests/07-replay-cache --strict-cache', tone: 'muted' },
+      { text: 'RUN  e2e v0.25.0 · targets: web · strict-cache', tone: 'muted' },
+      { text: ' ✓ |web| checkout.e2e.ts (1 test) 880ms', tone: 'pass' },
+      { text: 'Tests  1 passed (1) | cache: hit | 0 tokens', tone: 'primary' },
+    ],
+    traceTitle: 'trace.md (抜粋)',
+    traceLines: [
+      'replay: hit (.e2e/cache/checkout.json)',
+      'step 1: 3 cached actions in 310ms (0 LLM)',
+      'step 2: expect(...).toBeEnabled() -> pass',
+    ],
+  },
+];
+---
+
+<section class="hero-stage" aria-label="e2e テスト実行モードのプレビュー" data-hero-stage>
+  <div class="stage-topbar">
+    <div class="stage-tabs" role="tablist" aria-label="テスト実行モード">
+      {modes.map((mode, index) => (
+        <button
+          type="button"
+          role="tab"
+          id={`stage-tab-${mode.id}`}
+          aria-controls={`stage-panel-${mode.id}`}
+          aria-selected={index === 0 ? 'true' : 'false'}
+          tabindex={index === 0 ? '0' : '-1'}
+          class="stage-tab"
+          data-stage-tab={mode.id}
+        >
+          {mode.label}
+        </button>
+      ))}
+    </div>
+
+    <div class="stage-meta tabular-nums" aria-live="polite">
+      <span class="stage-filename" data-stage-filename>{modes[0].filename}</span>
+      <span class="stage-divider" aria-hidden="true">/</span>
+      <span class="stage-metric" data-stage-metric>{modes[0].metric}</span>
+    </div>
+  </div>
+
+  <div class="stage-panels">
+    {modes.map((mode, index) => (
+      <div
+        id={`stage-panel-${mode.id}`}
+        role="tabpanel"
+        aria-labelledby={`stage-tab-${mode.id}`}
+        class="stage-grid"
+        data-stage-panel={mode.id}
+        data-filename={mode.filename}
+        data-metric={mode.metric}
+        hidden={index !== 0}
+      >
+        <div class="stage-code-pane">
+          <div class="pane-header">
+            <span class="pane-label">テストコード (e2e 0.25.0)</span>
+            <span class="pane-file-mobile">{mode.filename}</span>
+          </div>
+          <pre class="stage-pre"><code>{mode.code}</code></pre>
+        </div>
+
+        <div class="stage-output-pane">
+          <div class="stage-terminal">
+            <div class="pane-header">
+              <span class="pane-label">実行結果</span>
+              <span class="pane-metric-mobile tabular-nums">{mode.metric}</span>
+            </div>
+            <pre class="stage-terminal-pre">{mode.terminalLines.map((line) => (
+              <span class:list={['term-line', line.tone ? `tone-${line.tone}` : '']}>{line.text}{'\n'}</span>
+            ))}</pre>
+          </div>
+
+          <div class="stage-trace">
+            <div class="pane-header">
+              <span class="pane-label">{mode.traceTitle}</span>
+            </div>
+            <pre class="stage-trace-pre">{mode.traceLines.join('\n')}</pre>
+          </div>
+        </div>
+      </div>
+    ))}
+  </div>
+</section>
+
+<style>
+  .hero-stage {
+    width: 100%;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-hairline);
+    border-radius: 6px;
+    overflow: hidden;
+    text-align: left;
+  }
+
+  .stage-topbar {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 46px;
+    background-color: var(--bg-surface);
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .stage-tabs {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .stage-tab {
+    appearance: none;
+    border: 0;
+    border-right: 1px solid var(--border-hairline);
+    background-color: transparent;
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    line-height: 1.4;
+    padding: 0.625rem 0.875rem;
+    cursor: pointer;
+    white-space: nowrap;
+    flex: 1 1 0;
+    text-align: center;
+    transition: background-color 160ms var(--ease-precision), color 160ms var(--ease-precision);
+  }
+
+  .stage-tab:last-child {
+    border-right: 0;
+  }
+
+  .stage-tab:hover {
+    color: var(--text-primary);
+  }
+
+  .stage-tab[aria-selected="true"] {
+    background-color: var(--bg-elevated);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: inset 0 -2px 0 0 var(--accent);
+  }
+
+  .stage-meta {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    padding-right: 1rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .stage-metric {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .stage-divider {
+    color: var(--border-hairline);
+  }
+
+  .stage-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 430px;
+  }
+
+  .stage-grid[hidden] {
+    display: none;
+  }
+
+  .stage-code-pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .stage-output-pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .stage-terminal {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--border-hairline);
+    flex: 1 1 auto;
+  }
+
+  .stage-trace {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg-surface);
+    flex: 1 1 auto;
+  }
+
+  .pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border-hairline);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .pane-label {
+    font-weight: 500;
+  }
+
+  .pane-file-mobile,
+  .pane-metric-mobile {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stage-pre,
+  .stage-terminal-pre,
+  .stage-trace-pre {
+    margin: 0;
+    padding: 1rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.65;
+    color: var(--text-primary);
+    overflow-x: auto;
+    tab-size: 2;
+  }
+
+  .stage-trace-pre {
+    color: var(--text-muted);
+  }
+
+  .term-line {
+    display: inline;
+  }
+
+  .tone-pass {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .tone-agent {
+    color: var(--semantic-agent);
+    font-weight: 500;
+  }
+
+  .tone-muted {
+    color: var(--text-muted);
+  }
+
+  .tone-primary {
+    color: var(--text-primary);
+  }
+
+  @media (min-width: 768px) {
+    .stage-tabs {
+      flex: 0 0 auto;
+    }
+
+    .stage-tab {
+      flex: 0 0 auto;
+      padding: 0.625rem 1.25rem;
+    }
+
+    .stage-tab:last-child {
+      border-right: 1px solid var(--border-hairline);
+    }
+
+    .stage-meta {
+      display: flex;
+    }
+
+    .pane-file-mobile,
+    .pane-metric-mobile {
+      display: none;
+    }
+
+    .stage-grid {
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+      min-height: 364px;
+    }
+
+    .stage-code-pane {
+      border-bottom: 0;
+      border-right: 1px solid var(--border-hairline);
+    }
+  }
+</style>
+
+<script>
+  const stages = document.querySelectorAll<HTMLElement>('[data-hero-stage]');
+
+  for (const stage of stages) {
+    const tabs = Array.from(stage.querySelectorAll<HTMLButtonElement>('[data-stage-tab]'));
+    const panels = Array.from(stage.querySelectorAll<HTMLElement>('[data-stage-panel]'));
+    const filenameEl = stage.querySelector<HTMLElement>('[data-stage-filename]');
+    const metricEl = stage.querySelector<HTMLElement>('[data-stage-metric]');
+
+    const activate = (modeId: string, focusTab = false) => {
+      for (const tab of tabs) {
+        const selected = tab.dataset.stageTab === modeId;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        if (selected && focusTab) {
+          tab.focus();
+        }
+      }
+
+      for (const panel of panels) {
+        const active = panel.dataset.stagePanel === modeId;
+        panel.hidden = !active;
+        if (active) {
+          if (filenameEl && panel.dataset.filename) {
+            filenameEl.textContent = panel.dataset.filename;
+          }
+          if (metricEl && panel.dataset.metric) {
+            metricEl.textContent = panel.dataset.metric;
+          }
+        }
+      }
+    };
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        if (tab.dataset.stageTab) {
+          activate(tab.dataset.stageTab);
+        }
+      });
+
+      tab.addEventListener('keydown', (event) => {
+        const currentIndex = tabs.indexOf(tab);
+        if (currentIndex === -1) return;
+
+        let nextIndex = -1;
+        if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % tabs.length;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = tabs.length - 1;
+        }
+
+        if (nextIndex >= 0) {
+          event.preventDefault();
+          const nextId = tabs[nextIndex].dataset.stageTab;
+          if (nextId) {
+            activate(nextId, true);
+          }
+        }
+      });
+    }
+  }
+</script>
