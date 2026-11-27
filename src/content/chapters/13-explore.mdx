@@ -1,0 +1,235 @@
+---
+chapterNumber: "13"
+order: 13
+part: "part-1"
+title: "explore"
+summary: "テストファイルを書かずにゴールだけ渡してアプリを探索させる e2e explore と、PR 差分に絞った --changed-since 探索、再現テストでの検証手順を学びます。"
+modelRequirement: "required"
+estimatedMinutes: 30
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "12-ci-and-reporters"
+solutionFiles:
+  - filename: "repro-login.e2e.ts"
+    lang: "ts"
+    sourcePath: "13-explore/repro-login.e2e.ts"
+---
+
+## この章で分かること
+
+- テストファイルを書かず、**ゴールだけ**を渡してモデルにアプリを探索させる `e2e explore`。
+- 予算（ステップ数と時間）、結果の読み方（finding、assessment、`report.json` の `run.explore`）、サインイン済みで始める方法。
+- **`e2e explore --changed-since origin/main`** で PR の差分・タイトル・本文に沿った探索を行い、GitHub Actions に組み込む方法。
+- 探索の報告は**仮説**であること。再現テストを書いて確かめてから、不具合として扱う。
+
+## 前提
+
+- 第 12 章までを終えていること。モデルが必要です。
+- 1 回の探索で数十万トークンを使います。この章は `--max-steps 3 --timeout 180000` の小さな予算で進めます。
+
+## 一緒に書く
+
+### 1. 探索を始める
+
+```bash
+npx e2e explore --max-steps 3 --timeout 180000 'Explore the todo list like a careful first-time user: add, complete, filter and delete todos, and report anything off'
+```
+
+ゴールは「どの流れを」「どんな立場で」「何を報告するか」を 1 文で書きます。「注文の確定はしない」のような制限も同じ文に入れられます。ゴールを省くと `Explore the app and find bugs` になります。
+
+実行中は、ステップの完了と finding がそのつど表示されます。
+
+```text
+ ❯ |web| Exploring  Explore the todo list like a careful first-time user: ...
+   ✓ 1  Todo list basics 23.91s · 10 actions
+   ✓ 2  Todo persistence 13.26s · 6 actions
+   ⚑ medium issue  Submitting whitespace adds an empty todo (/todos)
+   ✓ 3  Todo input validation 43.37s · 11 actions · 1 finding
+   ended: the step limit was reached
+```
+
+**観察ポイント**
+
+- モデルが自分で「ステップ」（1 つの小さな計画）を立て、操作し、気付いたことを finding として残します。テストと違って、失敗しても止まりません。
+- `--max-steps 3` なので 3 ステップで終わりました（既定 8、最大 100）。時間の上限は `--timeout`（既定 10 分、最大 2 時間）です。
+
+### 2. 結果を読む
+
+終了時に finding の一覧と assessment（総評）が出ます。
+
+```text
+ 1. medium issue     Submitting whitespace adds an empty todo
+    /todos · step 3
+    expected  Submitting a title containing only spaces should be rejected or
+              normalized without creating a blank todo and without confusing feedback.
+    actual    After entering three spaces and tapping Add, the visible list
+              stayed unchanged without any validation or feedback; the input
+              still contained spaces. ...
+    steps     1. Open Todos.
+              2. Enter three spaces in New todo.
+              3. Tap Add and inspect the list and input.
+    evidence  .e2e/results/explore-the-todo-list-like-a-careful-…/attempt-1/finding-1.png
+ Assessment
+   The todo-list goal was largely met: adding, completing, filtering, and
+   deleting todos all worked as expected, aside from the whitespace-only input
+   concern. ... The most valuable scripted tests are the All/Active/Completed
+   filtering and completion flow, and validation of empty and whitespace-only submissions.
+   Findings  1 issue
+      Steps  3 of 3 · 3 passed · the step limit was reached
+         AI  247.4k tokens · 26% cached · 36 model calls
+```
+
+| 項目 | 意味 |
+| --- | --- |
+| `issue` / `warning` | `issue` があると終了コード 1（失敗）。`warning` は 0 |
+| severity（`high` / `medium` / `trivial` …） | モデルの見立て。重い順に並ぶ |
+| `expected` / `actual` | モデルが期待したことと、見たこと |
+| `steps` | 再現手順。**これを再現テストにする** |
+| `evidence` | その瞬間のスクリーンショット |
+| Assessment | ゴールをどこまで達成できたか、何を自動テストにすべきか |
+
+3 ステップで 247,000 トークンを使っています。探索は高価です。予算を小さく始め、必要なら広げてください。
+
+機械で読むなら `report.json` の `run.explore` に、`goal`、`budgets`、`ended`、`summary`、`steps`、`findings` が入っています。
+
+```bash
+node -e "const e=require('./.e2e/report.json').run.explore; console.log(e.findings.map(f => [f.kind, f.severity, f.title]))"
+```
+
+### 3. 報告を疑う: 再現テストを書く
+
+finding の `title` は "Submitting whitespace adds an empty todo"（空白を送ると空の todo が追加される）ですが、`actual` を読むと「一覧は変わらなかった」とあり、タイトルと食い違っています。モデルの報告は**仮説**です。確かめる方法は 1 つ、`steps` を再現テストにして、**期待する振る舞い**を書くことです。
+
+`tests/13-explore/repro-whitespace.e2e.ts` を作ります。
+
+```ts
+// tests/13-explore/repro-whitespace.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+// e2e explore が報告した「空白だけの todo を送信すると何も起きず、フィードバックも無い」の再現テスト。
+// 期待する振る舞い（空白だけは追加されない）を書く。通れば「追加されない」は正しく、報告の残りは UX の指摘として扱う。
+test('a whitespace-only title is not added', async ({ app, screen }) => {
+  await app.open('/todos');
+  const input = screen.getByLabel('New todo');
+  await input.fill('   ');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(screen.getByRole('list', 'Todos').getByRole('listitem')).toHaveCount(0);
+  await expect(screen.getByRole('status')).toHaveText('0 remaining');
+  await expect(input).toBeFocused(); // 入力欄にフォーカスが戻る。これが唯一のフィードバック
+});
+```
+
+```bash
+npx e2e run tests/13-explore
+```
+
+通ります。つまり「空の todo が追加される」は**起きていません**。残るのは「何も起きないことに説明が無い」という UX の指摘で、これは不具合ではなく設計の判断です（練習用アプリは意図的にそうしています）。
+
+この判断の流れが、探索を実務で使うときの型です。
+
+1. finding の `steps` をそのまま再現テストにする。
+2. アサーションには**期待する振る舞い**を書く（モデルの `expected` を参考に、自分で決める）。
+3. テストが**失敗したら不具合**。テストをそのまま回帰テストとして残す。
+4. テストが**通ったら報告は誤り**か、不具合ではなく仕様。finding は閉じる。
+
+探索の価値は「不具合を見つける」より「**どこにテストを書くべきかを教えてくれる**」ことにあります。Assessment の最後の文が、まさにそれです。
+
+### 4. サインイン済みで始める
+
+```bash
+npx e2e explore --session alice --max-steps 3 --timeout 180000 'Explore the billing settings and report anything off'
+```
+
+`--session alice` を付けると、第 09 章の setup テストだけを先に走らせてセッションを復元し、サインイン済みの状態から探索します。setup がパスワードを `fill` しているので、スクリーンショットのパスワード欄はマスクされます（第 09 章）。
+
+### 5. PR の差分だけを狙って探索する（`--changed-since`）
+
+`e2e@0.25.0` では、`--changed-since <ref>` を渡すことで**ブランチの変更箇所に絞った探索**ができます。
+
+```bash
+npx e2e explore --changed-since origin/main --max-steps 4
+```
+
+**仕組みと挙動**
+
+- プランナーは `origin/main` とのマージベース以降の**コミットメッセージと差分（diff）**を読み、変更が影響し得る画面だけにステップを使います。GitHub PR や GitLab MR 上では、**PR のタイトルと本文（description）**も自動で読みます。
+- **変更が原因になり得る不具合だけ**を `issue`（終了コード 1）として扱い、無関係な既存画面の指摘は `warning`（終了コード 0）に落とすため、PR に関係ないノイズで落ちにくくなります。
+- ゴールを省略して実行したとき、作業ツリーがクリーンで変更がユーザーから見えないもの（ドキュメントのみ・テストのみの PR など）と判断されると、探索自体をスキップして成功終了します（`report.json` の `run.explore.ended` が `'skipped'` になります）。
+
+GitHub Actions で PR レビュー補助として組み込む例です。
+
+```yaml
+# .github/workflows/explore.yml
+on: pull_request
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    # issue が出ると終了コード 1 になるため、マージゲートではなくレビュー補助として動かす
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # ベースブランチとの差分計算に履歴が必要
+      # ... npm ci、npx e2e-web install chromium --with-deps など
+      - run: npx e2e explore --changed-since origin/${{ github.base_ref }} --max-steps 4
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+```
+
+- `fetch-depth: 0` が無いと浅いクローンでマージベースが取れず `INVALID_CHANGED_SINCE` で失敗します。
+- `@e2e-dev/github` を設定していれば、finding がそのまま PR コメントに投稿されます。
+- **セキュリティ注意**: `pull_request_target` では絶対に実行しないでください。Secrets を保持した状態で fork 側が書いた diff や PR 本文をモデルに読ませることになります。
+
+### 6. そのほかのオプション
+
+| オプション | 意味 |
+| --- | --- |
+| `--headed` | ブラウザを表示して探索を見る |
+| `--agent <name>` | config の名前付き agent（ペルソナ）で探索する |
+| `--target <name>` | 複数ターゲットがあるとき |
+| `--output <dir>` | 結果の置き場所。並列に複数の探索を走らせるとき（第 14 章の bug bash） |
+| `--video` | 探索を録画する |
+| `--changed-since <ref>` | 指定 ref 以降の差分・PR 情報に絞って探索する |
+
+探索はリプレイキャッシュを使いません。毎回ライブです。また、スクリプトから探索を起動したいときは `e2e/runner` の `explore()` 関数も使えます（付録 A）。
+
+## 読む
+
+- [Exploring without a test](https://e2e.com/docs/explore)（公式ドキュメント）: 全部。「Explore a pull request's change」も確認。
+- [CLI リファレンス](https://e2e.com/docs/reference/cli#e2e-explore): `e2e explore` の節（終了コード、`report.json` の形）。
+- オフライン補足: `npx e2e guide explore`。
+
+## 自分の言葉で書き直す
+
+1. 別のゴールで探索を 1 回走らせる（例: `'Explore the sign-in form with wrong and empty inputs and report anything off'`。予算は `--max-steps 3 --timeout 180000`）。
+2. 出た finding を 1 つ選び、`tests/13-explore/repro-login.e2e.ts` に再現テストを書く。
+3. 手元のメモに「finding の主張」「再現テストの結果」「不具合か仕様か」を書く。
+
+解答例はページ下部の『模範解答を見る』（`repro-login.e2e.ts`）にありますが、finding はモデル次第で変わります。自分の finding で書いてください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| 探索が 3 ステップで終わる | `--max-steps` の上限 | 既定 8、最大 100。`--timeout` も合わせて調整 |
+| `issue` が出て終了コード 1 | 仕様。issue は失敗扱い | 再現テストで確かめ、仕様なら無視してよい。CI では `continue-on-error: true` を検討 |
+| `INVALID_CHANGED_SINCE` | 浅いクローンで履歴が足りない、または ref 名が誤っている | CI の checkout に `fetch-depth: 0` を付ける |
+| finding のタイトルと `actual` が食い違う | モデルの要約の癖 | `actual` と `steps` を正とする |
+| トークンが多い | 探索は画面を何度も読む | 予算を絞る。PR ごとは `--changed-since`、定常的な探索は bug bash（第 14 章）へ |
+
+## まとめ
+
+- `e2e explore 'ゴール'` でテスト無しに探索。予算は `--max-steps` と `--timeout`。
+- finding は `expected` / `actual` / `steps` / `evidence`。`issue` は終了コード 1。
+- `--changed-since origin/main` で PR 差分・PR タイトル・本文に焦点を当てた探索ができ、GitHub Actions とも連携できる。
+- 報告は仮説。`steps` を再現テストにし、期待する振る舞いで確かめる。失敗したら不具合、通ったら仕様か誤報。
+- Assessment は「どこにテストを書くか」の指針。
+
+次の第 14 章は Part 1 の最後です。コーディングエージェント（Claude Code など）に同梱 skill と最新の `e2e mcp` サーバーを使わせてテストを書かせ、複数の探索を並列に走らせる bug bash を行い、エージェントが書いたテストを第 02〜11 章の基準でレビューします。

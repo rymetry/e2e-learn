@@ -1,0 +1,96 @@
+{
+  "$comment": "章・ページ → 前提にする docs ファイル（e2e-inc/e2e リポジトリ内のパス）。src/content/chapters/*.mdx の「読む」節およびサイト共通ページと揃える。",
+  "chapters": {
+    "00-typescript-basics": [],
+    "01-setup-and-first-run": [
+      "docs/quickstart.mdx",
+      "docs/core-concepts.mdx",
+      "docs/reference/cli.mdx"
+    ],
+    "02-locators": ["docs/reference/screen.mdx", "docs/core-concepts.mdx"],
+    "03-expect": ["docs/reference/expect.mdx"],
+    "04-test-structure": ["docs/reference/test.mdx", "docs/fixtures.mdx"],
+    "05-app-and-browser": [
+      "docs/reference/app.mdx",
+      "docs/browser.mdx",
+      "docs/web.mdx",
+      "docs/reference/web.mdx",
+      "docs/reference/config.mdx"
+    ],
+    "06-agent-steps": [
+      "docs/models.mdx",
+      "docs/agents.mdx",
+      "docs/agent-steps.mdx",
+      "docs/reference/agent.mdx"
+    ],
+    "07-replay-cache": ["docs/cache.mdx", "docs/subscriptions.mdx"],
+    "08-debugging": ["docs/debugging.mdx", "docs/reference/errors.mdx"],
+    "09-authentication": [
+      "docs/authentication.mdx",
+      "docs/security.mdx",
+      "docs/reference/security.mdx"
+    ],
+    "10-api-testing": [
+      "docs/api-testing.mdx",
+      "docs/reference/request.mdx",
+      "docs/reference/expect.mdx",
+      "docs/reference/config.mdx"
+    ],
+    "11-page-objects-and-visual": [
+      "docs/page-object-model.mdx",
+      "docs/visual-testing.mdx"
+    ],
+    "12-ci-and-reporters": [
+      "docs/ci.mdx",
+      "docs/ci/github-actions.mdx",
+      "docs/ci/vercel-previews.mdx",
+      "docs/reference/reporters.mdx",
+      "docs/filters.mdx",
+      "docs/github.mdx",
+      "docs/subscriptions.mdx"
+    ],
+    "13-explore": ["docs/explore.mdx"],
+    "14-coding-agents-mcp-bug-bash": [
+      "docs/coding-agents.mdx",
+      "docs/mcp-server.mdx",
+      "docs/reference/mcp.mdx",
+      "docs/bug-bash.mdx"
+    ],
+    "a1-appendix-tools-and-settings": [
+      "docs/tools.mdx",
+      "docs/decision-models.mdx",
+      "docs/reference/environment.mdx",
+      "docs/telemetry.mdx",
+      "docs/reference/runner.mdx",
+      "docs/example-projects.mdx",
+      "docs/core.mdx",
+      "docs/reference/core.mdx",
+      "docs/desktop.mdx",
+      "docs/frameworks/nextjs.mdx",
+      "docs/services.mdx",
+      "docs/self-healing.mdx"
+    ]
+  },
+  "pages": {
+    "setup": [
+      "docs/quickstart.mdx",
+      "docs/reference/config.mdx",
+      "docs/reference/cli.mdx",
+      "docs/models.mdx",
+      "docs/frameworks/nextjs.mdx"
+    ],
+    "errors": ["docs/reference/errors.mdx", "docs/debugging.mdx"],
+    "reference": [
+      "docs/reference/screen.mdx",
+      "docs/reference/expect.mdx",
+      "docs/reference/request.mdx",
+      "docs/reference/agent.mdx",
+      "docs/reference/cli.mdx",
+      "docs/reference/reporters.mdx",
+      "docs/reference/test.mdx",
+      "docs/reference/web.mdx",
+      "docs/reference/app.mdx",
+      "docs/reference/config.mdx"
+    ]
+  }
+}

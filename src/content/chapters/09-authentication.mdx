@@ -1,0 +1,235 @@
+---
+chapterNumber: "09"
+order: 9
+part: "part-1"
+title: "認証と秘密情報"
+summary: "test.setup でログインセッションを 1 回だけ保存・復元し、credentials と secrets のハンドルで秘密情報をログやモデルから隔離します。"
+modelRequirement: "none"
+estimatedMinutes: 25
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "05-app-and-browser"
+solutionFiles:
+  - filename: "todos-signed-in.e2e.ts"
+    lang: "ts"
+    sourcePath: "09-authentication/todos-signed-in.e2e.ts"
+---
+
+## この章で分かること
+
+- ログインは **setup テストで 1 回だけ**行い、保存したセッションを他のテストが復元する。
+- `credentials` に宣言したパスワードは**ハンドル**として扱われ、テストコードにもログにも値が出ない。
+- パスワード以外の秘密情報（API キーなど）は `secrets`。環境変数での上書きや関数プロバイダーの使い分け。
+
+## 前提
+
+- 第 05 章までを終えていること。
+- モデルは不要（第 06〜08 章を飛ばしてもこの章は進められます）。
+
+## 一緒に書く
+
+### 1. アカウントを config に宣言する
+
+`my-e2e-hands-on/e2e.config.ts` に `credentials` を足します。
+
+```ts
+// e2e.config.ts（抜粋）
+  credentials: {
+    alice: { username: 'alice', password: 'password123' },
+  },
+```
+
+練習用アプリのアカウントは公開されているものなので値を直書きしていますが、実務では必ず環境変数から読みます。
+
+```ts
+    alice: { username: 'alice', password: process.env.ALICE_PASSWORD ?? '' },
+```
+
+config の読み込み時にパスワードが検査され、6 文字未満（未設定を含む）だと `INVALID_CONFIG` で止まります。「設定し忘れたまま走る」ことがありません。また、`password`（および `secrets` の各項目）は文字列だけでなく `() => vault.read(...)` のような関数も受け付け、環境変数に平文を置かずに秘密ストアから実行時取得することもできます。
+
+### 2. setup テストでサインインして保存する
+
+`tests/09-authentication/auth.setup.e2e.ts` を作ります。
+
+```ts
+// tests/09-authentication/auth.setup.e2e.ts
+import { test } from '@e2e-dev/web';
+import { credentials, expect } from 'e2e';
+
+// セッションを 1 回だけ作る setup テスト。session: 'alice' を使うテストの前に自動で走る。
+test.setup('sign in as alice', { sessions: ['alice'] }, async ({ app, screen, session, browser }) => {
+  const alice = credentials.user('alice');
+
+  await app.open('/login');
+  await screen.getByLabel('Username').fill(alice.username);
+  await screen.getByLabel('Password').fill(alice.password); // Secret: 値はログにも trace にも残らない
+  await screen.getByRole('button', 'Sign in').tap();
+
+  // save の前に、サインインできたことを必ず確かめる
+  await expect(browser).toHaveURL('/todos');
+  await expect(screen.getByText('Signed in as alice')).toBeVisible();
+
+  await session.save('alice');
+});
+```
+
+**観察ポイント**
+
+- `test.setup` は `test` の特別な形で、`sessions: ['alice']` で「`alice` という名前のセッションを保存する」と宣言し、本体で `session.save('alice')` を必ず 1 回呼びます。宣言と保存が食い違うと `SESSION_CONTRACT` で失敗します。
+- `credentials.user('alice')` が返す `password` は文字列ではなく **`Secret`** です。`.value` のような取り出し口はありません。渡せる先は `fill(...)` と、第 06 章の `agent.act` の `params` だけです。
+- `session.save()` は「サインインできたか」を検査しません。保存の前に URL やヘッダーの文字で必ず確認してください。失敗したまま保存すると、依存する全テストが分かりにくい形で失敗します。
+
+### 3. セッションを使う
+
+`tests/09-authentication/billing.e2e.ts` を作ります。
+
+```ts
+// tests/09-authentication/billing.e2e.ts
+import { describe, test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+describe('billing, signed in', { session: 'alice' }, () => {
+  test('opens without the sign-in form', async ({ app, browser, screen }) => {
+    await app.open('/settings/billing');
+    await expect(browser).toHaveURL('/settings/billing');
+    await expect(screen.getByText('Signed in as alice')).toBeVisible();
+    await expect(screen.getByRole('status')).toHaveText('Current plan: Free');
+  });
+
+  test('upgrades to Pro', async ({ app, screen }) => {
+    await app.open('/settings/billing');
+    await screen.getByRole('button', 'Upgrade to Pro').tap();
+    const dialog = screen.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', 'Confirm').tap();
+    await expect(dialog).toBeHidden();
+    await expect(screen.getByRole('status')).toContainText('Pro');
+    await expect(screen.getByRole('button', 'Upgrade to Pro')).toBeHidden();
+  });
+});
+
+test('without a session, billing redirects to login', async ({ app, browser }) => {
+  await app.open('/settings/billing');
+  await expect(browser).toHaveURL('/login');
+});
+```
+
+```bash
+npx e2e run tests/09-authentication
+```
+
+```text
+ ✓ |web| tests/09-authentication/auth.setup.e2e.ts (1 test)
+ ✓ |web| tests/09-authentication/billing.e2e.ts (3 tests)
+      Tests  4 passed (4)
+```
+
+**観察ポイント**
+
+- `{ session: 'alice' }` を付けたテストは、保存された cookie・localStorage・IndexedDB を持った状態で始まります。ページは開かれていないので、最初に `app.open` します。
+- `describe` に付ければ中の全テストに効きます。3 つ目のテストは付けていないので、未ログインのまま `/login` に飛ばされます。
+- 2 つのテストが**同じセッション**を復元しますが、ブラウザ側の状態は互いに影響しません。復元は「保存時点のコピー」から始まるからです。ただし、練習用アプリのデータはサーバー側のセッションにあるので、`upgrades to Pro` の後に同じ `sid` で開けば Pro のままです。テストの順序に依存しないよう、各テストは自分で状態を作るか確認するかしてください。
+- 必要な setup テストは、ディレクトリ単位の実行でも、`:行番号` で 1 つだけ選んだときでも自動で先に走ります。
+
+セッションは 1 回の実行の間だけ有効で、メモリ上の鍵で暗号化されてディスクに置かれ、終了時に消されます。別の実行に持ち越されることはありません。
+
+### 4. 値はどこに出ないか
+
+`trace.md` の setup テストの Steps を見てください。
+
+```text
+3. ✓ `locator.fill` `getByLabel("Password")` (67ms)
+   - fill textbox "Password"
+```
+
+Username の fill は値が追えますが、Password の fill に値はありません。`Secret` を `fill` した時点から、その値は trace、レポート、モデルへの入力のどこに出ても `<secret:alice.password>` に置き換えられます。
+
+第 06 章で学ぶ `agent.act` に渡す場合も同じです。
+
+```ts
+await agent.act('sign in with the given credentials', {
+  params: { username: alice.username, password: alice.password },
+});
+```
+
+モデルが見るのは「`password` という名前の秘密がある」ことだけで、値はランナーがパスワード欄に入れます。モデルが選んだ欄がパスワード欄でなければ拒否されます。
+
+注意点が 2 つあります。
+
+- スクリーンショットで隠されるのはパスワード欄だけです。秘密を fill した後もスクリーンショットはモデルに渡るので、パスワードの表示切り替えなどで値が別の場所に出たり、普通の入力欄に秘密を入れたりすると、その値はモデルのプロバイダーにも届きます。テストには本番で使わない専用の値を使ってください。
+- 置き換えは「同じ文字列」にしか効きません。アプリが値を加工して表示する（末尾 4 桁だけ出す等）と、その部分は残ります。秘密の入力は setup テストに閉じ込め、結果だけを確認する形にしてください。
+
+### 5. パスワード以外の秘密: `secrets`
+
+API キーやトークンのように、テスト中に入力する値やエンジンの認証オプションに渡す値は `secrets` に置きます。練習用アプリには該当する入力欄が無いので、書き方だけ示します。
+
+```ts
+// e2e.config.ts
+  secrets: {
+    'api-token': process.env.API_TOKEN ?? '',
+  },
+```
+
+```ts
+import { secrets } from 'e2e';
+
+await screen.getByLabel('API token').fill(secrets.get('api-token'));
+```
+
+`secrets.get()` は `credentials` のパスワードと同じハンドルを返します。`credentials` と `secrets` は別の名前空間なので、`secrets.get('alice')` でパスワードは取れません。また、`web({ basicAuth: { username: 'staging', password: secrets.get('staging-password') } })` のように、対応するエンジンオプションにも `secrets.get()` を渡せます。
+
+### 6. 実行ごとに上書きする
+
+環境変数で config の値を差し替えられます。名前は大文字にして、英数字以外を `_` にしたものです。
+
+| config の項目 | 環境変数 |
+| --- | --- |
+| `credentials.alice.username` | `E2E_USER_ALICE_USERNAME` |
+| `credentials.alice.password` | `E2E_USER_ALICE_PASSWORD` |
+| `secrets['api-token']` | `E2E_SECRET_API_TOKEN` |
+
+```bash
+E2E_USER_ALICE_PASSWORD=wrongpass npx e2e run tests/09-authentication
+```
+
+これを実行すると setup テストが「サインインできたことの確認」で失敗し、`session: 'alice'` のテストは `setup-failed` としてスキップされます。`session.save()` の前に確認を置く理由がここで分かります。
+
+## 読む
+
+- [Authentication](https://e2e.com/docs/authentication)（公式ドキュメント）: 全部。
+- [test リファレンス](https://e2e.com/docs/reference/test): `test.setup`、`session`、`sessions` の節。
+- [Security](https://e2e.com/docs/security): 「How secrets stay out of the model」「What can still leak」。
+- [Security リファレンス](https://e2e.com/docs/reference/security): 「Secret fills」「Screenshots after a secret fill」「Sessions」。
+- オフライン補足: `npx e2e guide writing-tests` の「Sign-in sessions」。
+
+## 自分の言葉で書き直す
+
+`tests/09-authentication/todos-signed-in.e2e.ts` を作り、次を満たすテストを書いてください。
+
+1. `session: 'alice'` で `/todos` を開く。
+2. ヘッダーに "Signed in as alice" が出ていることを確認する。
+3. todo を 1 件追加する。
+4. "Sign out" ボタンを押し、ヘッダーが "Sign in" リンクに戻ることを確認する。
+5. `/settings/billing` を開くと `/login` に飛ぶことを確認する。
+
+詰まったらページ下部の『模範解答を見る』（`todos-signed-in.e2e.ts`）を確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `INVALID_CONFIG` でパスワード | 環境変数が未設定か 6 文字未満 | 6 文字以上の値を設定する |
+| `SESSION_CONTRACT` | `sessions` の宣言と `session.save` が食い違う | 宣言した名前をちょうど 1 回ずつ save する |
+| `session: 'alice'` のテストが `skipped`（`setup-failed`） | setup テストが失敗した | setup の失敗ブロックを先に直す |
+| `COLLECTION_ERROR`: setup が `describe` の中 | `test.setup` はトップレベル限定 | `describe` の外に出す |
+| `POLICY_DENIED` で `toHaveValue` | パスワード欄の値を読もうとした | 欄の値ではなく、サインインの結果を確認する |
+
+## まとめ
+
+- サインインは `test.setup` で 1 回。`session.save` の前に成功を確認する。
+- 使う側は `{ session: '名前' }`。ブラウザの cookie / localStorage / IndexedDB が復元されるので、最初に `app.open` する。
+- `credentials.user(name).password` と `secrets.get(name)` はハンドル。`fill` や `agent.act` の `params`（および対応するエンジンオプション）にだけ渡せる。
+- スクリーンショットで隠れるのはパスワード欄だけ。テスト専用の値を使い、秘密の入力は setup に閉じ込める。
+
+次の第 10 章では、組み込みの `request` フィクスチャと値のマッチャーで API を直接検査します。この章で作ったセッションを API 側でも使う方法も扱います。

@@ -1,0 +1,348 @@
+---
+chapterNumber: "A"
+order: 15
+part: "appendix"
+title: "付録 A: プロジェクトツール、設定、runner API、エコシステム"
+summary: "プロジェクトツール（defineTool）、decision model、環境変数、telemetry、e2e/runner API、および @e2e-dev/core・@e2e-dev/desktop・services・ホステッド環境など発展ドキュメントを整理します。"
+modelRequirement: "partial"
+estimatedMinutes: 35
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "14-coding-agents-mcp-bug-bash"
+solutionFiles:
+  - filename: "reset-tool.e2e.ts"
+    lang: "ts"
+    sourcePath: "a1-appendix-tools-and-settings/reset-tool.e2e.ts"
+  - filename: "run-from-code.mjs"
+    lang: "js"
+    sourcePath: "a1-appendix-tools-and-settings/run-from-code.mjs"
+---
+
+## この章で分かること
+
+- 第 01〜14 章で触れなかった機能と最新エコシステムを補います。
+  - **プロジェクトツール**（`defineTool`）: agent が goal の途中で呼べる自前の関数。データ準備やテスト用 API の呼び出し、計算済みスタイルの読み取りに使う。**手を動かす**
+  - **環境変数**: 認証情報の差し替え、キャッシュの置き場、CI モードなど。**手を動かす**
+  - **telemetry**: CLI が何を送るか、止め方。**手を動かす**
+  - **runner API**（`e2e/runner`）: CLI を通さずコードから実行・探索する。**手を動かす**
+  - **decision model**（`@e2e-dev/decision`）: フル LLM の代わりに小さな判断モデルで `act` を回す。API キーが要るので**読むだけ**
+- 最後に、`@e2e-dev/core`、`@e2e-dev/desktop`、Next.js 連携、`services`、自己修復（self-healing）、ホステッド端末、移行ガイドなど発展ドキュメントの案内。
+
+## 前提
+
+- 第 14 章までを終えていること。1 と 5 の一部でモデルを使います。
+
+## 一緒に書く
+
+### 1. プロジェクトツール
+
+第 06 章の agent は、画面を見て操作することしかできません。「todo を 3 件用意してから」のような準備も、画面から 1 件ずつ入力します。**プロジェクトツール**は、agent に自前の関数を持たせる仕組みです。練習用アプリの API を叩く関数を渡せば、agent は画面を触らずにデータを作れます。
+
+ツールは `e2e.config.ts` に書きます。ここでは `agents.tooled` という**名前付き agent** に 3 つのツール（`seed_todos`、`list_todos`、`reset_session`）を登録します（`default` は第 06〜07 章のまま）。
+
+```ts
+// e2e.config.ts（抜粋）
+import { gateway, tool } from 'ai';
+import { defineTool } from 'e2e/agent';
+import { z } from 'zod';
+
+const seedTodos = defineTool(
+  tool({
+    description:
+      'Add todos to a practice-app session through its API. sessionId is the value of the sid cookie.',
+    inputSchema: z.object({ sessionId: z.string(), titles: z.array(z.string()).min(1) }),
+    execute: async ({ sessionId, titles }) => {
+      const created: unknown[] = [];
+      for (const title of titles) {
+        const response = await fetch(new URL('/api/todos', app.url), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-session-id': sessionId },
+          body: JSON.stringify({ title }),
+        });
+        if (!response.ok) throw new Error(`POST /api/todos failed: HTTP ${response.status}`);
+        created.push(await response.json());
+      }
+      return created;
+    },
+  }),
+  { mutates: true }, // 状態を変える
+);
+
+const listTodos = defineTool(
+  tool({
+    description: 'List the todos of a practice-app session through its API. sessionId is the value of the sid cookie.',
+    inputSchema: z.object({ sessionId: z.string() }),
+    execute: async ({ sessionId }) => {
+      const response = await fetch(new URL('/api/todos', app.url), { headers: { 'x-session-id': sessionId } });
+      if (!response.ok) throw new Error(`GET /api/todos failed: HTTP ${response.status}`);
+      return response.json();
+    },
+  }),
+  { mutates: false }, // 読むだけ
+);
+
+const resetSession = defineTool(
+  tool({
+    description: 'Reset a practice-app session (todos, sign-in, plan) through its API. sessionId is the value of the sid cookie.',
+    inputSchema: z.object({ sessionId: z.string() }),
+    execute: async ({ sessionId }) => {
+      const response = await fetch(new URL('/api/reset', app.url), {
+        method: 'POST',
+        headers: { 'x-session-id': sessionId },
+      });
+      if (!response.ok) throw new Error(`POST /api/reset failed: HTTP ${response.status}`);
+      return { reset: true };
+    },
+  }),
+  { mutates: true },
+);
+
+export default {
+  // ...
+  agents: {
+    default: { model, system: '...' },
+    tooled: {
+      model,
+      system: 'You are a thorough QA agent. Prefer the project tools for data setup and for checking data.',
+      tools: { seed_todos: seedTodos, list_todos: listTodos, reset_session: resetSession },
+    },
+  },
+} satisfies E2EConfig;
+```
+
+3 つの部品でできています。
+
+| 部品 | 役割 |
+| --- | --- |
+| `tool({ description, inputSchema, execute })`（`ai` パッケージ） | モデルに見せる説明、引数の形（Zod）、実際に動く関数 |
+| `defineTool(..., { mutates, platforms? })`（`e2e/agent`） | e2e に「状態を変えるか」や対象プラットフォームを宣言する。`mutates: true` はアクション予算を 1 つ使い、**リプレイキャッシュで再生できない**。`false` は予算を使わず、画面観察やスタイル読み取りができる |
+| `agents.<name>.tools` | ツール名 → ツール。この名前がモデルから見える名前になる |
+
+`description` は人向けではなく**モデル向け**の文です。「何をするか」「引数に何を渡すか」を書きます。ここでは「`sessionId` は `sid` cookie の値」と書いて、モデルが推測せずに済むようにしています。
+
+テストは `agent: 'tooled'` でこの agent を選び、`params` で cookie の値を渡します。`tests/a1-appendix-tools-and-settings/tools.e2e.ts` を作ります。
+
+```ts
+// tests/a1-appendix-tools-and-settings/tools.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test(
+  'the agent seeds todos through a project tool',
+  { tags: ['agent'], agent: 'tooled' },
+  async ({ app, screen, browser, agent }) => {
+    await app.open('/todos');
+    // sid cookie はページが最初に API を呼んだ後に付く。status が出るまで待ってから読む（第 11 章と同じ）。
+    await expect(screen.getByRole('status')).toHaveText('0 remaining');
+    const sid = (await browser.cookies('/api/todos')).find((cookie) => cookie.name === 'sid')?.value;
+    if (!sid) throw new Error('sid cookie is missing');
+
+    await agent.act(
+      'Using the seed_todos tool, add the todos {titles} to the session {sid}. Then confirm with the list_todos tool that the session has exactly 3 todos. Do not touch the page.',
+      { params: { sid, titles: 'Milk, Eggs, Bread' } },
+    );
+
+    // ツールは API に書いただけなので、画面は開き直して確かめる。
+    await app.open('/todos');
+    await expect(screen.getByRole('list', 'Todos').getByRole('listitem')).toHaveCount(3);
+    await expect(screen.getByRole('status')).toHaveText('3 remaining');
+  },
+);
+```
+
+```bash
+npx e2e run tests/a1-appendix-tools-and-settings
+```
+
+```text
+   ✓ the agent seeds todos through a project tool [tooled] > agent.act "Using the seed_todos tool, …" 6.35s · 3 model calls
+ ✓ |web| tests/a1-appendix-tools-and-settings/tools.e2e.ts (1 test) 8.21s ai 15.6k tokens
+         AI  15.6k tokens · 3 model calls · chatgpt.responses/gpt-6-luna
+      Cache  1 missed
+```
+
+**観察ポイント**
+
+- `[tooled]` がテスト名に付きます。`agent:` で選んだ agent の名前です。
+- 画面を 1 件ずつ入力すると 10 回前後のモデル呼び出しになる作業が、**3 回**で終わりました。ツール 1 回、確認 1 回、完了の判断 1 回です。
+- もう一度走らせても `Cache 1 missed` のままです。`mutates: true` のツールは録画できないので、このステップは**毎回ライブ**です。ツールで準備する部分は短く保ち、画面の操作は別の `act` に分けると、そちらは再生できます。
+- ツール名には予約名（文法の動詞 `tap`・`screenshot` など、および `complete_step`、`locate`、`test_lines`、`run_code`、`start_recording`、`stop_recording`、`report_finding`）は使えません（`INVALID_CONFIG`）。
+- 読むだけのツール（`mutates: false`）では `getToolContext(executionOptions)` で画面観察（`observe()`）、証拠スクショ添付（`attachScreenshot()`）、Web 要素の計算済み CSS プロパティ読み取り（`context.read({ id }, { style: ['color', 'opacity'] })`）が行えます。`mutates: true` のツールから呼ぶと `POLICY_DENIED` です。
+
+### 2. decision model（読むだけ）
+
+第 06 章の agent は、毎回 LLM に画面を渡して「次に何をするか」を自由文で考えさせます。`@e2e-dev/decision` の **decision model** は、代わりに「操作は tap / type / select / … のどれか」「対象はこの要素のどれか」を**選択肢から確率付きで選ばせ**、文字入力だけ小さなテキストモデルに書かせます。モデルが自由に文を書かないので、安くて速く、出力がセレクタや URL になることもありません。
+
+```ts
+// e2e.config.ts（公式 docs の例）
+import { decisionExecutor } from '@e2e-dev/decision';
+import { openai } from '@ai-sdk/openai';
+
+agents: {
+  default: {
+    executor: decisionExecutor({
+      model: openai.decisionModel('gpt-6-luna'),
+      textModel: openai('gpt-6-luna-fast'),
+      vision: true,
+    }),
+  },
+},
+```
+
+テストの書き方は第 06 章と同じ `agent.act` / `agent.assert` で、変わるのは config だけです。decision model には OpenAI か TypeSafe の **API キー**が必要で、サブスクリプションログインでは使えません。
+
+知っておく制限は次のとおりです。
+
+| 制限 | 意味 |
+| --- | --- |
+| `navigate` が無い | URL はテストコード側（`app.open`）。画面内の移動はリンクの `tap` |
+| `minProbability` / `minConfidence` | 既定は無効。弱い判断を止めるしきい値。自分のテストで精度を測ってから設定する |
+| 3 回続けて何も変わらない | `AUTOMATION_UNSUPPORTED` でステップが止まる |
+| `maxModelCalls` | 判断の 1 問 1 問が回数に数えられる |
+
+同じパッケージの `decisionFilter()` は、PR の変更に関係するテストだけを選ぶフィルタです（第 12 章の 7 で触れました）。
+
+### 3. 環境変数
+
+e2e が読む環境変数は [Environment リファレンス](https://e2e.com/docs/reference/environment) に全部載っています。よく使うのはこの 6 つです。
+
+| 変数 | 効果 | 章 |
+| --- | --- | --- |
+| `CI` | CI モード（再試行 1、並列 1、キャッシュ `read-only`、`.only` 禁止） | 12 |
+| `E2E_USER_<NAME>_USERNAME` / `_PASSWORD` | config の `credentials.<name>` を差し替える | 09 |
+| `E2E_SECRET_<NAME>` | config の `secrets.<name>` を差し替える | 09 |
+| `E2E_CACHE_DIR` | `.e2e/cache/` の代わりの置き場 | 07 |
+| `AI_GATEWAY_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | モデル provider のキー。`gateway()` / `openai()` / `openrouter()` が読む | 06 |
+| `E2E_TELEMETRY_DISABLED` / `DO_NOT_TRACK` | telemetry と更新チェックを止める | この章 |
+
+認証情報の差し替えを確かめます。config の値より環境変数が優先されます。
+
+```bash
+E2E_USER_ALICE_PASSWORD=wrongpass1 npx e2e run tests/09-authentication/billing.e2e.ts
+```
+
+名前の変換規則は「大文字にして、英数字以外を `_`」です（`power-user` → `E2E_USER_POWER_USER_PASSWORD`）。6 文字未満のパスワードや秘密は `INVALID_CONFIG` になります。
+
+アプリの起動コマンド（`app.command`）には環境変数が**そのままは渡りません**。渡るのは `PATH`、`HOME`、`TMPDIR` などの最小限と、`command.env` に書いたもの、`command.inheritEnv` に一致するものだけです。
+
+### 4. telemetry
+
+CLI は匿名の利用データ（コマンド名、版、OS、実行件数と失敗コード）を送ります。テスト名、アプリの内容、認証情報は送りません。
+
+```bash
+npx e2e telemetry
+```
+
+何が送られるかは、送らずに印字して確かめられます。
+
+```bash
+E2E_TELEMETRY_DEBUG=1 npx e2e list tests/01-setup-and-first-run
+```
+
+```text
+[telemetry] {"event":"e2e_cli_session","properties":{"os":"darwin","arch":"arm64","ci":false,"coding_agent":"claude-code","e2e_version":"0.25.0","command":"list","flags":[],"exit_code":0,"error_code":null,"duration_ms":311,"distinct_id":"07c4…","project_id":"bef4…",…}}
+```
+
+止めるなら、どれか 1 つで足ります。
+
+```bash
+npx e2e telemetry disable        # ~/.config/e2e/telemetry.json に保存
+export E2E_TELEMETRY_DISABLED=1  # シェルや CI ジョブで
+export DO_NOT_TRACK=1            # ツール横断の慣習
+```
+
+環境変数は保存した設定より優先されます。CI では `E2E_TELEMETRY_DISABLED=1` を `env:` に書くのが簡単です。
+
+### 5. runner API（`e2e/runner`）
+
+`e2e/runner` を使うと、CLI を通さずにコードから実行・探索・選択・ホスト起動ができます（`run`、`explore`、`list`、`openHost`、`isE2EError`）。なお、`e2e/runner` の関数は **Node.js 専用**です（Bun で呼ぶと `NODE_UNSUPPORTED` になります）。
+
+`scripts/run-from-code.mjs` を作ります。
+
+```js
+// scripts/run-from-code.mjs
+import { list, run } from 'e2e/runner';
+
+// 1. 実行せずに選択だけ見る（e2e list と同じ）
+const selection = await list({ tags: ['agent'] });
+const selected = selection.pairs.filter((pair) => pair.disposition === 'run');
+console.log(`agent タグのテスト: ${selected.length} 件（収集 ${selection.pairs.length} 件）`);
+
+// 2. 1 ファイルだけ実行し、report を受け取る
+const result = await run({
+  files: ['tests/04-test-structure/fixtures.e2e.ts'],
+  onEvent(event) {
+    if (event.type === 'test-started') console.log(`  started  ${event.title}`);
+  },
+});
+console.log(result.status, JSON.stringify(result.report.run.summary));
+process.exitCode = result.exitCode;
+```
+
+```bash
+node scripts/run-from-code.mjs
+```
+
+**観察ポイント**
+
+- `list()` は何も起動せず、各テストの `disposition`（`run` / `filtered` / `skip`）を返します。
+- `run()` や `explore()` は `result.report` を返し、プロセスを終了しません。終了コードは自分で `process.exitCode` に入れます。
+- 同じプロセスで 2 つの `run()` / `explore()` を同時には走らせられません（`RUNNER_BUSY`）。
+- `openHost()` は Playwright Test や Vitest など**別のテストランナーの中**で e2e のセッション（`screen`、`app`、`agent`、`request`）を使うための入口です。
+
+### 6. エコシステムと発展ドキュメントの案内
+
+`e2e@0.25.0` の周辺パッケージと、必要になったときに読む公式ドキュメントの一覧です。
+
+| トピック / パッケージ | 公式ドキュメント | いつ読むか |
+| --- | --- | --- |
+| **`@e2e-dev/core`** | [Core ガイド](https://e2e.com/docs/core) / [Reference](https://e2e.com/docs/reference/core) | テストランナー無しで素のコード（スクレイパー、ボット、データ準備）からブラウザやモバイルを駆動したいとき。テスト内で 2 つ目のセッションを開いてチャット等を検証したいとき |
+| **`@e2e-dev/desktop`** | [Desktop ガイド](https://e2e.com/docs/desktop) | macOS ネイティブデスクトップアプリを OS アクセシビリティツリー経由でテストしたいとき（プロトタイプ・macOS 専用） |
+| **Next.js 連携** | [Next.js ガイド](https://e2e.com/docs/frameworks/nextjs) | `next dev` / `next start` の自動切替、`allowedDevOrigins`、App Router の `role="alert"` 対策を知りたいとき |
+| **Services（`defineService`）** | [Services ガイド](https://e2e.com/docs/services) | メール受信サーバー、DB、`emulate` による Stripe/Resend エミュレーター等をテスト前後に自動起動・停止したいとき |
+| **Self-healing** | [Self-healing ガイド](https://e2e.com/docs/self-healing) | UI 変更時にリプレイからライブエージェントへハンドオフし、録画を自動修復する詳細を知りたいとき |
+| **ホステッドブラウザ・端末** | [Hosted browsers and devices](https://e2e.com/docs/integrations) | CI で自前ブラウザや端末を用意せず、Cloudflare Browser Run、Kernel、Notte（`@e2e-dev/notte`）、Lightpanda、Moli（`@e2e-dev/moli`）、smol、Expo Simulators（`@e2e-dev/eas`）、Limrun、TestMu AI、BrowserStack、E2B、Revyl（`@e2e-dev/revyl`）を使いたいとき |
+| **公式サンプル集** | [Example projects](https://e2e.com/docs/example-projects) | Vite、Next.js、Astro、Angular、Expo、SwiftUI、Compose、Flutter、.NET MAUI のサンプルを `npx e2e init --example with-vite` などで試したいとき |
+| **カスタム Executor** | [Custom executors](https://e2e.com/docs/executors) | agent の「考えて操作する」ループ自体を差し替えたいとき（上級者向け） |
+| **エンジン自作** | [Writing an engine](https://e2e.com/docs/writing-an-engine) | Web / モバイル / デスクトップ以外の独自対象を駆動するエンジンを自作するとき |
+| **他フレームワークからの移行** | [Migrate guides](https://e2e.com/docs/migrate) | 既存の Playwright / Cypress / Selenium / Appium / Detox / Maestro のテストを移すとき。対応表は他人のコードを読む辞書にもなる |
+
+## 読む
+
+- [Project tools](https://e2e.com/docs/tools)（公式ドキュメント）: 全部。`context.read` による計算済みスタイル読み取りも確認。
+- [Environment リファレンス](https://e2e.com/docs/reference/environment): 「Credentials and secrets」「Run mode」「What app processes inherit」。
+- [Telemetry](https://e2e.com/docs/telemetry): 「Opt out」「What is never sent」。
+- [Decision models](https://e2e.com/docs/decision-models): 冒頭と「Limits」。
+- [e2e/runner リファレンス](https://e2e.com/docs/reference/runner): `run`、`explore`、`list`、`openHost`。
+
+## 自分の言葉で書き直す
+
+1. `e2e.config.ts` の `reset_session` ツール（`POST /api/reset`）を使って、「todo を 1 件入れた後に agent にセッションを初期化させ、画面が空に戻ること」を確かめるテストを `tests/a1-appendix-tools-and-settings/reset-tool.e2e.ts` に書く。
+2. `E2E_CACHE_DIR` を別の場所にして第 07 章のテストを走らせ、`.e2e/cache/` に何も増えないことを確かめる。
+3. 手元のメモに、自分の実務のアプリで agent に持たせたいプロジェクトツールを 3 つ、`mutates` の真偽と一緒に書く。
+
+解答例はページ下部の『模範解答を見る』（`reset-tool.e2e.ts` と `run-from-code.mjs`）を確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `INVALID_CONFIG`（tools） | ツール名が文法の動詞やランナーの予約名と同じ、または `defineTool` を通していない | 名前を変える。`defineTool(tool(...), { mutates })` で包む |
+| agent がツールを使わない | `description` が曖昧、または goal にツール名が無い | description に「何を」「引数に何を」を書く。goal でツール名を指す |
+| `POLICY_DENIED` | `mutates: true` のツールで `observe()` や `read()` した | 観察・読み取りは `mutates: false` の別ツールに分ける |
+| ツールのテストが毎回モデルを使う | `mutates: true` は再生できない | 仕様。準備のステップを短く保つ |
+| `E2E_USER_…` が効かない | 名前の変換を間違えている | 大文字、英数字以外は `_`。config に無い名前は無視される |
+| `INVALID_CONFIG`（credentials） | パスワードが空か 6 文字未満 | 6 文字以上にする |
+| `RUNNER_BUSY` | 同じプロセスで `run()` / `explore()` を重ねた | `await` で直列にする |
+| `NODE_UNSUPPORTED`（`e2e/runner`） | Bun で `e2e/runner` の API を呼んだ | Node.js で実行するか CLI を使う |
+
+## まとめ
+
+- プロジェクトツールは `defineTool(tool({...}), { mutates })` を `agents.<name>.tools` に登録する。`mutates: true` は再生できず、`mutates: false` は `getToolContext` で画面観察や計算済みスタイル読み取りができる。
+- decision model は `executor: decisionExecutor(...)`。API キーが必要だがテストの書き方は変わらない。
+- 環境変数で credentials / secrets を差し替え、`E2E_TELEMETRY_DISABLED=1` や `DO_NOT_TRACK=1` で telemetry を止められる。
+- `e2e/runner` の `list()` / `run()` / `explore()` / `openHost()` でコードから実行・統合できる。
+- ランナー無しの自動操作や 2 セッション同時テストには `@e2e-dev/core`、macOS ネイティブアプリには `@e2e-dev/desktop`、依存サーバー管理には `defineService` が用意されている。
+
+これで e2e Zero to Hero の Part 1 および付録 A のカリキュラムは完了です。あとは自分の実務プロジェクトで `npx e2e init` から始めてみてください。

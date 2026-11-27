@@ -1,0 +1,569 @@
+---
+import HeroStage from '../components/HeroStage.astro';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getAllChapters, toChapterMeta } from '../lib/chapters';
+
+const entries = await getAllChapters();
+const chaptersMeta = entries.map(toChapterMeta);
+const resumePayload = JSON.stringify(
+  chaptersMeta.map((c) => ({
+    slug: c.slug,
+    order: c.order,
+    chapterNumber: c.chapterNumber,
+    part: c.part,
+  })),
+);
+
+const stages = [
+  {
+    range: '第 00〜05 章',
+    name: '基礎と決定論テスト',
+    model: 'モデル不要',
+    summary:
+      'TypeScript の最小文法から環境構築、ロケータ優先順、expect マッチャー、フィクスチャ、ネットワークモックまでを固めます。',
+    href: '/chapters/00-typescript-basics/',
+    cta: '第 00 章から読む',
+  },
+  {
+    range: '第 06〜08 章',
+    name: 'AI Agent とデバッグ',
+    model: 'AI モデル使用',
+    summary:
+      'agent.act / assert / extract の使い分け、リプレイキャッシュによるゼロトークン再生、--step と trace.md 解析を実践します。',
+    href: '/chapters/06-agent-steps/',
+    cta: '第 06 章から読む',
+  },
+  {
+    range: '第 09〜11 章',
+    name: '設計と運用パターン',
+    model: '一部モデル不要',
+    summary:
+      '認証セッション再利用、組み込み request フィクスチャによる API テスト、Page Object とビジュアル回帰を習得します。',
+    href: '/chapters/09-authentication/',
+    cta: '第 09 章から読む',
+  },
+  {
+    range: '第 12〜14 章・付録 A',
+    name: 'CI・自動探索・MCP',
+    model: '応用・運用',
+    summary:
+      'HTML レポーターと CI 並列実行、e2e explore --changed-since、MCP run_code と周辺エコシステムまで網羅します。',
+    href: '/chapters/12-ci-and-reporters/',
+    cta: '第 12 章から読む',
+  },
+];
+
+const connectionModes = [
+  {
+    mode: '既定の公開 URL',
+    env: '設定不要（既定）',
+    target: 'https://test-automation-practice-app.rymetry.workers.dev',
+    useCase: 'ローカルサーバー起動なしで即座に全章を試したいとき',
+  },
+  {
+    mode: '別 URL へ切替',
+    env: 'APP_URL=https://...',
+    target: '任意のステージング環境やローカル起動済みサーバー',
+    useCase: '独自デプロイ先や検証環境へテストを向けたいとき',
+  },
+  {
+    mode: 'ローカル起動連携',
+    env: 'APP_DIR=../practice-app',
+    target: 'e2e が app.command で自動起動するローカルプロセス',
+    useCase: 'オフライン実行やバックエンド挙動を直接確認したいとき',
+  },
+];
+---
+
+<BaseLayout isHome={true}>
+  <section class="hero-section">
+    <div class="lab-container hero-inner">
+      <div class="hero-copy">
+        <h1 class="hero-h1">
+          コードと AI で、<span class="inline-block">壊れにくい</span> E2E を書く。
+        </h1>
+        <p class="hero-sub">
+          e2e inc. のフレームワークを全 16 章で手を動かして学ぶ実践ハンズオン。
+        </p>
+        <div class="hero-action">
+          <a
+            id="hero-primary-cta"
+            href="/chapters/00-typescript-basics/"
+            class="lab-cta"
+            data-chapters-meta={resumePayload}
+          >
+            第 00 章から始める
+          </a>
+        </div>
+      </div>
+
+      <HeroStage />
+    </div>
+  </section>
+
+  <!-- 5:7 Asymmetric Editorial Value Section -->
+  <section class="home-section lab-container" aria-labelledby="value-heading">
+    <div class="editorial-split">
+      <div class="editorial-lead">
+        <h2 id="value-heading" class="lab-heading">この教材で身につくこと</h2>
+        <p class="editorial-intro">
+          決定論的なロケータ設計を土台に、必要な箇所だけ AI Agent とリプレイキャッシュを組み合わせる実務の判断軸を段階的に習得します。
+        </p>
+
+        <figure class="architecture-figure" aria-label="e2e テスト実行フローの図解">
+          <svg
+            viewBox="0 0 520 224"
+            width="520"
+            height="224"
+            class="architecture-svg"
+            role="img"
+            aria-label="ロケータ、AI Agent、リプレイキャッシュ、CI レポートの連携図"
+          >
+            <rect
+              x="0.5"
+              y="0.5"
+              width="519"
+              height="223"
+              rx="5"
+              fill="var(--bg-elevated)"
+              stroke="var(--border-hairline)"
+            />
+            <line x1="0" y1="38" x2="520" y2="38" stroke="var(--border-hairline)" />
+            <text
+              x="16"
+              y="24"
+              fill="var(--text-muted)"
+              font-family="IBM Plex Mono, monospace"
+              font-size="14"
+            >
+              e2e execution pipeline
+            </text>
+
+            <!-- Grid guides -->
+            <line x1="260" y1="38" x2="260" y2="224" stroke="var(--border-hairline)" stroke-dasharray="3 3" />
+            <line x1="0" y1="131" x2="520" y2="131" stroke="var(--border-hairline)" stroke-dasharray="3 3" />
+
+            <!-- Node 1: Locator -->
+            <circle cx="28" cy="84" r="6" fill="var(--accent)" />
+            <text x="44" y="80" fill="var(--text-primary)" font-family="IBM Plex Sans JP, sans-serif" font-size="14" font-weight="600">
+              決定論ロケータ
+            </text>
+            <text x="44" y="102" fill="var(--text-muted)" font-family="IBM Plex Mono, monospace" font-size="14">
+              0 tokens / 高速
+            </text>
+
+            <!-- Arrow 1 -> 2 -->
+            <path d="M244 84 H268" stroke="var(--text-muted)" stroke-width="1.25" />
+            <path d="M264 80 L269 84 L264 88" fill="none" stroke="var(--text-muted)" stroke-width="1.25" />
+
+            <!-- Node 2: AI Agent -->
+            <circle cx="288" cy="84" r="6" fill="var(--semantic-agent)" />
+            <text x="304" y="80" fill="var(--text-primary)" font-family="IBM Plex Sans JP, sans-serif" font-size="14" font-weight="600">
+              AI Agent ステップ
+            </text>
+            <text x="304" y="102" fill="var(--text-muted)" font-family="IBM Plex Mono, monospace" font-size="14">
+              act / assert / extract
+            </text>
+
+            <!-- Node 3: Replay Cache -->
+            <circle cx="28" cy="177" r="6" fill="var(--accent)" />
+            <text x="44" y="173" fill="var(--text-primary)" font-family="IBM Plex Sans JP, sans-serif" font-size="14" font-weight="600">
+              リプレイキャッシュ
+            </text>
+            <text x="44" y="195" fill="var(--text-muted)" font-family="IBM Plex Mono, monospace" font-size="14">
+              --strict-cache
+            </text>
+
+            <!-- Arrow 3 -> 4 -->
+            <path d="M244 177 H268" stroke="var(--text-muted)" stroke-width="1.25" />
+            <path d="M264 173 L269 177 L264 181" fill="none" stroke="var(--text-muted)" stroke-width="1.25" />
+
+            <!-- Node 4: CI & Trace -->
+            <circle cx="288" cy="177" r="6" fill="var(--text-primary)" />
+            <text x="304" y="173" fill="var(--text-primary)" font-family="IBM Plex Sans JP, sans-serif" font-size="14" font-weight="600">
+              CI 並列・HTML 報告
+            </text>
+            <text x="304" y="195" fill="var(--text-muted)" font-family="IBM Plex Mono, monospace" font-size="14">
+              trace.md / e2e report
+            </text>
+          </svg>
+        </figure>
+      </div>
+
+      <div class="editorial-points">
+        <div class="editorial-row">
+          <h3 class="editorial-row-title">コード未経験から実務レベルへ</h3>
+          <p class="editorial-row-body">
+            第 00 章で async/await と型注釈の最小限を押さえてから進むため、テスト自動化が初めてでも途中でつまずきません。TypeScript 経験者はセットアップから第 01 章へ直接進めます。
+          </p>
+        </div>
+
+        <div class="editorial-row">
+          <h3 class="editorial-row-title">公開練習用アプリで準備ゼロ開始</h3>
+          <p class="editorial-row-body">
+            テスト対象の Todo・認証・API 機能を備えた公開練習用アプリを用意しています。訪問者ごとにセッションが分離されるため、手元でアプリを起動しなくても第 01 章から全テストを実行できます。
+          </p>
+        </div>
+
+        <div class="editorial-row">
+          <h3 class="editorial-row-title">第 05 章までは AI モデル不要で無料完結</h3>
+          <p class="editorial-row-body">
+            ロケータ・アサーション・フィクスチャ・ネットワーク制御といった壊れにくい E2E の基礎を API キー無しで完走できます。第 06 章から AI Agent とリプレイキャッシュへ自然に接続します。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4-Stage Curriculum Summary -->
+  <section class="home-section lab-container" aria-labelledby="stages-heading">
+    <div class="section-header-row">
+      <h2 id="stages-heading" class="lab-heading">4 つのステージで進むカリキュラム</h2>
+      <a href="/curriculum/" class="lab-link section-all-link">全 16 章のカリキュラムを見る →</a>
+    </div>
+
+    <div class="stage-summary-list">
+      {stages.map((stage) => (
+        <div class="stage-summary-row">
+          <div class="stage-summary-meta">
+            <span class="stage-range tabular-nums">{stage.range}</span>
+            <span class="stage-model">{stage.model}</span>
+          </div>
+          <div class="stage-summary-main">
+            <h3 class="stage-summary-title">{stage.name}</h3>
+            <p class="stage-summary-desc">{stage.summary}</p>
+          </div>
+          <div class="stage-summary-action">
+            <a href={stage.href} class="lab-link">{stage.cta} →</a>
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <!-- Practice App 3-Mode Connection Table -->
+  <section class="home-section lab-container" aria-labelledby="practice-app-heading">
+    <div class="section-header-row">
+      <h2 id="practice-app-heading" class="lab-heading">練習用アプリの 3 つの接続モード</h2>
+      <a href="/setup/" class="lab-link section-all-link">セットアップ手順を見る →</a>
+    </div>
+
+    <p class="section-note">
+      公開練習用アプリ（
+      <a
+        href="https://test-automation-practice-app.rymetry.workers.dev"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="lab-link"
+      >
+        test-automation-practice-app.rymetry.workers.dev
+      </a>
+      ）は訪問者ごとにセッションが独立しています。学習スタイルに合わせて 3 通りの接続先を環境変数だけで切り替えられます。
+    </p>
+
+    <div class="table-scroll">
+      <table class="lab-table">
+        <thead>
+          <tr>
+            <th>接続モード</th>
+            <th>環境変数・設定</th>
+            <th>接続先</th>
+            <th>主な用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          {connectionModes.map((row) => (
+            <tr>
+              <td class="cell-strong">{row.mode}</td>
+              <td class="cell-mono">{row.env}</td>
+              <td class="cell-mono">{row.target}</td>
+              <td>{row.useCase}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .hero-section {
+    padding-top: 1.5rem;
+    padding-bottom: 3rem;
+  }
+
+  .hero-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .hero-copy {
+    width: 100%;
+    max-width: 66rem;
+    text-align: center;
+    margin-bottom: 1.75rem;
+  }
+
+  .hero-h1 {
+    margin: 0 0 0.75rem;
+    font-size: clamp(2rem, 5.2vw, 4.25rem);
+    font-weight: 700;
+    line-height: 1.18;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+    text-wrap: balance;
+  }
+
+  .hero-sub {
+    margin: 0 auto 1.25rem;
+    max-width: 44ch;
+    font-size: var(--text-body);
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  .hero-action {
+    display: flex;
+    justify-content: center;
+  }
+
+  .home-section {
+    padding-top: 4rem;
+    border-top: 1px solid var(--border-hairline);
+  }
+
+  .home-section + .home-section {
+    margin-top: 4rem;
+  }
+
+  /* 5:7 Asymmetric Editorial Split */
+  .editorial-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+  }
+
+  .editorial-lead h2 {
+    margin: 0 0 0.875rem;
+  }
+
+  .editorial-intro {
+    margin: 0 0 1.5rem;
+    font-size: var(--text-body);
+    color: var(--text-muted);
+    max-width: 46ch;
+  }
+
+  .architecture-figure {
+    margin: 0;
+  }
+
+  .architecture-svg {
+    width: 100%;
+    max-width: 520px;
+    height: auto;
+    display: block;
+  }
+
+  .editorial-points {
+    border-top: 1px solid var(--border-hairline);
+  }
+
+  .editorial-row {
+    padding-block: 1.5rem;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .editorial-row-title {
+    margin: 0 0 0.5rem;
+    font-size: var(--text-body);
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .editorial-row-body {
+    margin: 0;
+    font-size: var(--text-body);
+    color: var(--text-muted);
+    max-width: 60ch;
+  }
+
+  /* 4-Stage Summary */
+  .section-header-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .section-header-row h2 {
+    margin: 0;
+  }
+
+  .section-all-link {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .stage-summary-list {
+    border-top: 1px solid var(--border-hairline);
+  }
+
+  .stage-summary-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.625rem 1.5rem;
+    padding-block: 1.25rem;
+    border-bottom: 1px solid var(--border-hairline);
+    align-items: baseline;
+  }
+
+  .stage-summary-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.875rem;
+    font-size: var(--text-sm);
+  }
+
+  .stage-range {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .stage-model {
+    color: var(--text-muted);
+  }
+
+  .stage-summary-title {
+    margin: 0 0 0.375rem;
+    font-size: var(--text-body);
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .stage-summary-desc {
+    margin: 0;
+    font-size: var(--text-body);
+    color: var(--text-muted);
+    max-width: 60ch;
+  }
+
+  .stage-summary-action {
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  /* Practice App Table */
+  .section-note {
+    margin: 0 0 1.25rem;
+    max-width: 65ch;
+    color: var(--text-muted);
+  }
+
+  .table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    border-top: 1px solid var(--border-hairline);
+  }
+
+  .lab-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    line-height: 1.55;
+  }
+
+  .lab-table thead {
+    background-color: var(--bg-surface);
+  }
+
+  .lab-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 0.75rem 0.875rem;
+    border-bottom: 1px solid var(--border-hairline);
+    white-space: nowrap;
+  }
+
+  .lab-table td {
+    padding: 0.875rem;
+    border-bottom: 1px solid var(--border-hairline);
+    color: var(--text-primary);
+    vertical-align: top;
+  }
+
+  .cell-strong {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .cell-mono {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+
+  @media (min-width: 960px) {
+    .editorial-split {
+      grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+      gap: 3.5rem;
+      align-items: start;
+    }
+
+    .editorial-lead {
+      position: sticky;
+      top: 5.5rem;
+    }
+
+    .stage-summary-row {
+      grid-template-columns: 12.5rem minmax(0, 1fr) 10.5rem;
+    }
+
+    .stage-summary-meta {
+      flex-direction: column;
+    }
+
+    .stage-summary-action {
+      text-align: right;
+    }
+  }
+</style>
+
+<script>
+  import { getChapterUrl, getResumeChapter } from '../lib/chapter-utils';
+  import { loadProgress } from '../lib/progress-store';
+
+  interface MinimalChapter {
+    slug: string;
+    order: number;
+    chapterNumber: string;
+    part: 'part-1' | 'appendix';
+  }
+
+  const cta = document.getElementById('hero-primary-cta') as HTMLAnchorElement | null;
+  if (cta && cta.dataset.chaptersMeta) {
+    try {
+      const chapters = JSON.parse(cta.dataset.chaptersMeta) as MinimalChapter[];
+      const progress = loadProgress();
+      if (progress.completed.length > 0 && chapters.length > 0) {
+        const completedSet = new Set(progress.completed);
+        const resumeTarget = getResumeChapter(chapters, completedSet);
+        if (resumeTarget) {
+          const label =
+            resumeTarget.part === 'appendix'
+              ? `付録 ${resumeTarget.chapterNumber}`
+              : `第 ${resumeTarget.chapterNumber} 章`;
+          cta.href = getChapterUrl(resumeTarget.slug);
+          cta.textContent = `続きから再開（${label}）`;
+        }
+      }
+    } catch {
+      // Fall back to default Chapter 00 CTA
+    }
+  }
+</script>

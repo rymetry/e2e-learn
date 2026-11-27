@@ -1,0 +1,165 @@
+---
+interface Props {
+  slug: string;
+  chapterLabel: string;
+}
+
+const { slug, chapterLabel } = Astro.props;
+const switchId = `chapter-complete-${slug}`;
+---
+
+<section class="progress-toggle-box" aria-label="章の完了状態" data-pagefind-ignore>
+  <label class="progress-switch-row" for={switchId}>
+    <span class="progress-switch-copy">
+      <span class="progress-switch-title">この章を完了にする</span>
+      <span class="progress-switch-desc" data-progress-status={slug}>
+        {chapterLabel}の進捗をブラウザ（localStorage）に記録します。
+      </span>
+    </span>
+    <span class="switch-control">
+      <input
+        id={switchId}
+        type="checkbox"
+        role="switch"
+        class="switch-input"
+        data-chapter-complete-toggle={slug}
+      />
+      <span class="switch-track" aria-hidden="true">
+        <span class="switch-thumb"></span>
+      </span>
+    </span>
+  </label>
+</section>
+
+<style>
+  .progress-toggle-box {
+    margin-top: 2.5rem;
+    max-width: 65ch;
+    border-top: 1px solid var(--border-hairline);
+    border-bottom: 1px solid var(--border-hairline);
+    padding-block: 1.125rem;
+  }
+
+  .progress-switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.25rem;
+    cursor: pointer;
+  }
+
+  .progress-switch-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .progress-switch-title {
+    font-size: var(--text-body);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .progress-switch-desc {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .switch-control {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .switch-input {
+    position: absolute;
+    opacity: 0;
+    width: 48px;
+    height: 28px;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .switch-track {
+    width: 48px;
+    height: 28px;
+    border-radius: 999px;
+    border: 1px solid var(--border-hairline);
+    background-color: var(--bg-surface);
+    display: inline-flex;
+    align-items: center;
+    padding: 3px;
+    transition: background-color 180ms var(--ease-precision), border-color 180ms var(--ease-precision);
+  }
+
+  .switch-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+    transform: translateX(0);
+    transition: transform 180ms var(--ease-precision), background-color 180ms var(--ease-precision);
+  }
+
+  .switch-input:checked + .switch-track {
+    background-color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .switch-input:checked + .switch-track .switch-thumb {
+    background-color: var(--accent-ink);
+    transform: translateX(20px);
+  }
+
+  .switch-input:focus-visible + .switch-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+
+<script>
+  import {
+    loadProgress,
+    saveProgress,
+    toggleChapterCompletion,
+  } from '../lib/progress-store';
+
+  const toggles = document.querySelectorAll<HTMLInputElement>('[data-chapter-complete-toggle]');
+
+  function syncToggle(input: HTMLInputElement) {
+    const slug = input.dataset.chapterCompleteToggle;
+    if (!slug) return;
+    const state = loadProgress();
+    const isCompleted = state.completed.includes(slug);
+    input.checked = isCompleted;
+    const status = document.querySelector<HTMLElement>(`[data-progress-status="${slug}"]`);
+    if (status) {
+      status.textContent = isCompleted
+        ? '完了済みとして記録されています。'
+        : 'この章の完了状態をブラウザに記録します。';
+    }
+  }
+
+  for (const toggle of toggles) {
+    syncToggle(toggle);
+    toggle.addEventListener('change', () => {
+      const slug = toggle.dataset.chapterCompleteToggle;
+      if (!slug) return;
+      const current = loadProgress();
+      const currentlyCompleted = current.completed.includes(slug);
+      if (currentlyCompleted !== toggle.checked) {
+        const next = toggleChapterCompletion(current, slug);
+        saveProgress(next);
+        window.dispatchEvent(new CustomEvent('e2e-progress-change', { detail: next }));
+      }
+      syncToggle(toggle);
+    });
+  }
+
+  window.addEventListener('e2e-progress-change', () => {
+    for (const toggle of toggles) {
+      syncToggle(toggle);
+    }
+  });
+</script>

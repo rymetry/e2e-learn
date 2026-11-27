@@ -1,0 +1,6 @@
+{
+  "$comment": "教材が前提にする e2e-inc/e2e のリリースタグ。pnpm release:diff -- --update <tag> で進める。",
+  "e2e": "e2e@0.25.0",
+  "@e2e-dev/web": "@e2e-dev/web@0.17.0",
+  "@e2e-dev/mobile": null
+}

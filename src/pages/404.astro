@@ -1,0 +1,62 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout
+  title="ページが見つかりません"
+  description="指定されたページは見つかりませんでした。"
+  isHome={false}
+>
+  <section class="notfound-page lab-container">
+    <h1 class="notfound-h1">ページが見つかりません</h1>
+    <p class="notfound-desc">
+      お探しの URL は移動したか削除された可能性があります。トップページまたはカリキュラム一覧から目的の章を開いてください。
+    </p>
+    <div class="notfound-actions">
+      <a href="/" class="lab-cta">トップページへ戻る</a>
+    </div>
+    <ul class="notfound-links">
+      <li><a href="/curriculum/" class="lab-link">全 16 章のカリキュラム一覧</a></li>
+      <li><a href="/setup/" class="lab-link">環境セットアップ</a></li>
+      <li><a href="/errors/" class="lab-link">エラーコード逆引き</a></li>
+    </ul>
+  </section>
+</BaseLayout>
+
+<style>
+  .notfound-page {
+    padding-top: 3.5rem;
+    padding-bottom: 4rem;
+    max-width: 46rem;
+  }
+
+  .notfound-h1 {
+    margin: 0 0 0.875rem;
+    font-size: clamp(1.75rem, 3.2vw, 2.25rem);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: var(--text-primary);
+  }
+
+  .notfound-desc {
+    margin: 0 0 1.75rem;
+    max-width: 56ch;
+    color: var(--text-muted);
+  }
+
+  .notfound-actions {
+    margin-bottom: 2rem;
+  }
+
+  .notfound-links {
+    list-style: none;
+    margin: 0;
+    padding: 1.25rem 0 0;
+    border-top: 1px solid var(--border-hairline);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.75rem;
+    font-size: var(--text-sm);
+  }
+</style>

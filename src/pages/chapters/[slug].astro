@@ -1,0 +1,33 @@
+---
+import { render } from 'astro:content';
+import ChapterLayout from '../../layouts/ChapterLayout.astro';
+import { getAllChapters, toChapterMeta } from '../../lib/chapters';
+import { loadSolutionFiles } from '../../lib/solutions';
+
+export async function getStaticPaths() {
+  const entries = await getAllChapters();
+  const allChapters = entries.map(toChapterMeta);
+
+  return entries.map((entry) => ({
+    params: { slug: entry.id },
+    props: {
+      entry,
+      allChapters,
+    },
+  }));
+}
+
+const { entry, allChapters } = Astro.props;
+const chapter = toChapterMeta(entry);
+const { Content, headings } = await render(entry);
+const loadedSolutions = loadSolutionFiles(chapter.solutionFiles);
+---
+
+<ChapterLayout
+  chapter={chapter}
+  allChapters={allChapters}
+  headings={headings}
+  loadedSolutions={loadedSolutions}
+>
+  <Content />
+</ChapterLayout>

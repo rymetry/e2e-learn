@@ -1,0 +1,331 @@
+---
+chapterNumber: "10"
+order: 10
+part: "part-1"
+title: "API テスト"
+summary: "組み込みの request フィクスチャと expect(response).toBeOK() / toMatchSchema で API を検証し、browser.cookies(url) 連携やブラウザ無しターゲットを学びます。"
+modelRequirement: "none"
+estimatedMinutes: 30
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "09-authentication"
+solutionFiles:
+  - filename: "reset.e2e.ts"
+    lang: "ts"
+    sourcePath: "10-api-testing/reset.e2e.ts"
+---
+
+## この章で分かること
+
+- 組み込みの **`request` フィクスチャ**（`request.get/post/put/patch/delete/head/fetch`）で API を呼び、レポートにステップとして記録しながら検査する。
+- **`expect(response).toBeOK()`** と **`toMatchSchema`** でレスポンスの成功判定と形（スキーマ）を固定する。
+- **`browser.cookies('/api/...')`** でブラウザのセッションを API 呼び出しに安全に引き継ぐ方法と、ブラウザ無しターゲット（`e2e.api.config.ts`）。
+
+## 前提
+
+- 第 09 章を終えていること（セッションを使う節で `alice` のセッションを使います）。
+- モデルは不要。
+
+## 一緒に書く
+
+### 1. `request` フィクスチャで API を呼んで形を検査する
+
+`e2e@0.25.0` では、テスト本体・`beforeEach`・`afterEach` で組み込みの `request` フィクスチャが使えます。`tests/10-api-testing/api.e2e.ts` を作ります。
+
+```ts
+// tests/10-api-testing/api.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { z } from 'zod';
+
+const Todo = z.object({ id: z.number(), title: z.string(), done: z.boolean(), createdAt: z.number() });
+
+test('GET /api/todos starts empty and answers JSON', async ({ request }) => {
+  const response = await request.get('/api/todos');
+  expect(response).toBeOK();
+  expect(response.headers['content-type']).toContain('application/json');
+  const todos = expect(await response.json()).toMatchSchema(z.array(Todo));
+  expect(todos).toHaveLength(0);
+});
+```
+
+**観察ポイント**
+
+- `request.get('/api/todos')` の相対パスは、ターゲットの `app.url` を基準に解決されます。公開 URL でもローカル（ポート `0` の自動割り当て含む）でも同じコードで動きます。なお、先頭 `/` はオリジン基準なので、`app.url` に `/shop` のようなベースパスがある場合は ``request.get(`${app.baseUrl}/api/todos`)`` と書きます。
+- `request` の各呼び出しは `GET /api/todos` のように**レポートや `trace.md` のステップとして記録**され、既定で `actionTimeout`（30 秒、`{ timeout }` で上書き可）が効きます。生の `fetch` と違い、ハングしっぱなしにならず、失敗箇所がトレースにそのまま残ります。
+- **`expect(response).toBeOK()`** は 2xx ステータスであることを検査します。失敗するとステータスコードとオリジン・パスを表示してくれます。
+- `response` は `WebResponse` 型で、`response.headers` はすべて小文字キーのオブジェクト（`Record<string, string>`）です。`headers.get('content-type')` ではなく **`response.headers['content-type']`** で読みます。
+- `toMatchSchema(スキーマ)` は Standard Schema（Zod / Valibot / ArkType）を受け取り、**型付きの値**を返します。`done: z.boolean()` をわざと `done: z.string()` に壊して走らせると、どの項目が食い違ったかを明示して失敗します。
+
+> **注意: 自作フィクスチャに `request` という名前を付けない**
+> `request` は `e2e@0.25.0` の組み込みフィクスチャです。`test.extend()` で `request` という名前のカスタムフィクスチャを定義すると組み込みと衝突（上書き）するため、アプリ固有のラッパーを作るときは `api` など別の名前を付けてください。また、`request` はテストスコープのフィクスチャなので、`beforeAll` / `afterAll` や worker フィクスチャでは受け取れません。
+
+### 2. セッション ID で呼び出しをつなぐ（`{ json }` と各種メソッド）
+
+ブラウザと違い、`request` フィクスチャは呼び出し間で cookie を保持しません。練習用アプリは `X-Session-Id` ヘッダーでもセッションを指定できるので、最初に `POST /api/session` で ID を取り、以降のリクエストに付けます。
+
+```ts
+test('a session id keeps calls together', async ({ request }) => {
+  // request は cookie を保持しないので、セッション ID をヘッダーで渡す
+  const started = await request.post('/api/session');
+  expect(started.status).toBe(201);
+  const { sid } = expect(await started.json()).toMatchSchema(z.object({ sid: z.string() }));
+  const headers = { 'X-Session-Id': sid };
+
+  // json オプションは JSON.stringify と content-type: application/json を自動付与する
+  const created = await request.post('/api/todos', {
+    headers,
+    json: { title: 'Buy milk' },
+  });
+  expect(created.status).toBe(201);
+  const todo = expect(await created.json()).toMatchSchema(Todo);
+  expect(todo).toMatchObject({ title: 'Buy milk', done: false });
+  expect(todo.id).toBeGreaterThan(0);
+
+  const list = await request.get('/api/todos', { headers });
+  expect(list).toBeOK();
+  expect(await list.json()).toEqual([expect.objectContaining({ id: todo.id, title: 'Buy milk' })]);
+
+  const bad = await request.post('/api/todos', { headers, json: { title: '' } });
+  expect(bad.status).toBe(400);
+  expect(await bad.json()).toEqual({ error: 'title is required' });
+
+  const deleted = await request.delete(`/api/todos/${todo.id}`, { headers });
+  expect(deleted.status).toBe(204);
+  const missing = await request.delete(`/api/todos/${todo.id}`, { headers });
+  expect(missing.status).toBe(404);
+});
+```
+
+**観察ポイント**
+
+- `request` には `get` / `post` / `put` / `patch` / `delete` / `head` の短縮メソッドと、任意の HTTP メソッドを指定できる `request.fetch(url, { method, headers, json, body, timeout, redirect })` があります。
+- **`{ json }`** を渡すと自動で `JSON.stringify` され、`content-type: application/json` が付きます。JSON 安全な値のみ許可され、`undefined` を含むキー、`Date`、`secrets.get()` ハンドルは誤送信防止のため拒否されます。文字列をそのまま送るときは `{ body }` を使います（`json` と `body` は併用不可）。
+- 値のマッチャーの使い分けは次のとおりです。
+
+| マッチャー | 使いどころ |
+| --- | --- |
+| `expect(res).toBeOK()` | 2xx ステータス全般の確認 |
+| `toBe(値)` | 数値や文字列の完全一致（`201`, `400`, `404` など厳密なステータス） |
+| `toEqual(オブジェクト)` | 構造ごと完全一致。余計なキーがあると失敗 |
+| `toMatchObject(一部)` | 書いたキーだけ一致すればよい。余計なキーは無視 |
+| `expect.objectContaining({...})` | `toEqual` の中で「このキーを含むオブジェクト」の代わりに置く |
+| `expect.any(String)` | 「文字列なら何でも」の代わりに置く |
+| `toHaveLength` / `toContain` / `toBeGreaterThan` | 配列の長さ、含む、数値の比較 |
+
+正常系だけでなく、`400` と `404` のような**エラー系**も同じテストで検査しています。UI からは起こしにくい状況を API なら直接作れます。
+
+### 3. サインインも API で
+
+```ts
+test('sign-in through the API', async ({ request }) => {
+  const started = await request.post('/api/session');
+  const { sid } = (await started.json()) as { sid: string };
+  const headers = { 'X-Session-Id': sid };
+
+  const wrong = await request.post('/api/login', {
+    headers,
+    json: { username: 'alice', password: 'nope' },
+  });
+  expect(wrong.status).toBe(401);
+  expect(await wrong.json()).toEqual({ error: 'Invalid username or password' });
+
+  const billingBefore = await request.get('/api/billing', { headers });
+  expect(billingBefore.status).toBe(401);
+
+  const ok = await request.post('/api/login', {
+    headers,
+    json: { username: 'alice', password: 'password123' },
+  });
+  expect(ok).toBeOK();
+
+  const me = await request.get('/api/me', { headers });
+  expect(me).toBeOK();
+  expect(await me.json()).toEqual({ username: 'alice' });
+
+  const upgraded = await request.post('/api/billing/upgrade', { headers });
+  expect(upgraded).toBeOK();
+  expect(await upgraded.json()).toEqual({ plan: 'Pro' });
+});
+```
+
+ここでは公開練習用アカウントのためパスワードを直書きしていますが、実務の API テストでは `Secret` ハンドルを `request` の `json` には渡せない（`POLICY_DENIED`）ため、API 用テストアカウントの認証情報は環境変数から読み、ログに出さないよう注意してください。
+
+### 4. 後から揃う値を待つ: `expect.poll`
+
+API が「受け付けました」と答えた後に、非同期で書き込みが反映される設計では、`expect.poll` で揃うまで読み直します。
+
+```ts
+test('poll a value that settles later', async ({ request }) => {
+  const started = await request.post('/api/session');
+  const { sid } = (await started.json()) as { sid: string };
+  const headers = { 'X-Session-Id': sid };
+
+  // 書き込みの完了を待たずに読む側を始め、値が揃うまで expect.poll で読み直す
+  const createPending = request.post('/api/todos', { headers, json: { title: 'Later' } });
+  await expect
+    .poll(
+      async () => ((await (await request.get('/api/todos', { headers })).json()) as unknown[]).length,
+      {
+        timeout: 10_000,
+        message: 'the todo never appeared',
+      },
+    )
+    .toBe(1);
+  expect(await createPending).toBeOK();
+});
+```
+
+**観察ポイント**
+
+- `expect.poll(読む関数, { timeout, intervals, message })` は、関数を繰り返し呼んでマッチャーが通るまで待ちます。
+- `e2e@0.25.0` では未 `await` の `request` がテスト終了時に残っていると `STEP_NOT_AWAITED` で失敗するため、投げっぱなしにした `createPending` も最後に `await` して完了を確かめます。
+
+### 5. ブラウザのセッションを API に引き継ぐ（`browser.cookies(url)`）
+
+「画面で操作した結果を API で確かめる」「API でデータを用意して画面で確認する」には、ブラウザが持つ cookie を `request` の `headers` に渡します。`@e2e-dev/web@0.17.0` では **`browser.cookies(url)`** にパスや URL を渡すことで、**その URL にブラウザが実際に送るはずの cookie だけ**を抽出できます（外部認証プロバイダーなどの無関係な cookie がヘッダーに混ざりません）。
+
+フィクスチャにまとめるとすっきりします。`tests/10-api-testing/signed-in-api.ts` を作ります。
+
+```ts
+// tests/10-api-testing/signed-in-api.ts
+import type { APIRequestOptions, WebResponse } from 'e2e';
+import { test as base } from '@e2e-dev/web';
+
+/** ブラウザの対象 URL 用 cookie を付けて同じアプリの API を呼ぶフィクスチャ。 */
+export const test = base.extend<{
+  api: (path: string, options?: APIRequestOptions & { method?: string }) => Promise<WebResponse>;
+}>({
+  api: async ({ browser, request }, use) => {
+    await use(async (path, options) => {
+      const cookies = await browser.cookies(path);
+      const cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+      return request.fetch(path, {
+        ...options,
+        headers: { ...options?.headers, ...(cookie ? { cookie } : {}) },
+      });
+    });
+  },
+});
+```
+
+使う側の `tests/10-api-testing/signed-in-api.e2e.ts` です。
+
+```ts
+// tests/10-api-testing/signed-in-api.e2e.ts
+import { expect } from 'e2e';
+import { test } from './signed-in-api';
+
+test('the API sees what the browser did', { session: 'alice' }, async ({ app, screen, api }) => {
+  await app.open('/todos');
+  await screen.getByLabel('New todo').fill('Made in the browser');
+  await screen.getByRole('button', 'Add').tap();
+  await expect(screen.getByRole('status')).toHaveText('1 remaining');
+
+  const me = await api('/api/me');
+  expect(me).toBeOK();
+  expect(await me.json()).toEqual({ username: 'alice' }); // セッションはサインイン済み
+
+  const todosRes = await api('/api/todos');
+  expect(todosRes).toBeOK();
+  const todos = (await todosRes.json()) as { title: string }[];
+  expect(todos.map((t) => t.title)).toEqual(['Made in the browser']);
+});
+```
+
+```bash
+npx e2e run tests/10-api-testing
+```
+
+```text
+ ✓ |web| tests/09-authentication/auth.setup.e2e.ts (1 test)
+ ✓ |web| tests/10-api-testing/signed-in-api.e2e.ts (1 test)
+ ✓ |web| tests/10-api-testing/api.e2e.ts (4 tests)
+      Tests  6 passed (6)
+```
+
+第 09 章の setup テストが先に自動で走っていることに注目してください。`session: 'alice'` を使うテストがあれば、別ディレクトリの setup テストでも自動で実行されます。
+
+### 6. ブラウザ無しで動かす
+
+ここまでのテストは Web ターゲットで動くので、API しか呼ばなくてもブラウザコンテキストが開きます。API だけの大きなスイートでは無駄なので、**エンジン無しのターゲット**を別 config に置きます。`e2e.api.config.ts` を作ります（`npx e2e init --engine none` でも雛形を作れます）。
+
+```ts
+// e2e.api.config.ts
+import type { E2EConfig } from 'e2e';
+
+export default {
+  tests: ['tests/10-api-testing/api-only/*.e2e.ts'],
+  targets: [{ name: 'api', platform: 'web' }],
+} satisfies E2EConfig;
+```
+
+```ts
+// tests/10-api-testing/api-only/health.e2e.ts
+import { expect, test } from 'e2e';
+
+const API_URL = process.env.API_URL ?? 'https://test-automation-practice-app.rymetry.workers.dev';
+
+test('health answers without a browser', async ({ app, request }) => {
+  expect(app.baseUrl).toBeUndefined(); // エンジン無しターゲットには app.url が無い
+  const response = await request.get(`${API_URL}/health`);
+  expect(response).toBeOK();
+  expect(await response.json()).toMatchObject({ ok: true, version: expect.any(String) });
+});
+```
+
+```bash
+npx e2e run --config e2e.api.config.ts
+```
+
+```text
+      run … · targets: api
+ ✓ |api| tests/10-api-testing/api-only/health.e2e.ts (1 test) 93ms
+```
+
+**観察ポイント**
+
+- エンジン無しのターゲットは `app` を持てません（`INVALID_CONFIG`）。`platform` が必須で、`app.baseUrl` は `undefined` です。相対パスを `request` に渡すと `APP_URL_REQUIRED` になるため、URL は環境変数（`API_URL`）から絶対 URL で渡します。
+- 同じ config に Web ターゲットと並べると、全テストが両方で走ってしまいます。別の config にして `--config` で切り替えます。
+- ブラウザを起動しないため、数十〜百ミリ秒程度で終わります。
+
+## 読む
+
+- [API testing](https://e2e.com/docs/api-testing)（公式ドキュメント）: 全部。
+- [request リファレンス](https://e2e.com/docs/reference/request): メソッド、`json`/`body`/`redirect` オプション、`WebResponse`、エラー一覧。
+- [expect リファレンス](https://e2e.com/docs/reference/expect): `toBeOK`、「Value matchers」「Asymmetric matchers」「Polling a value」。
+- [Browser リファレンス](https://e2e.com/docs/reference/web): `browser.cookies(url)` の節。
+
+## 自分の言葉で書き直す
+
+`tests/10-api-testing/reset.e2e.ts` を作り、組み込みの `request` フィクスチャを使って次を満たすテストを書いてください。
+
+1. `POST /api/session` で ID を取る。
+2. todo を 2 件作り、`PATCH /api/todos/:id` で 1 件を `done: true` にする（ステータス確認には `expect(...).toBeOK()` も使う）。
+3. `GET /api/todos` の結果を `toMatchSchema(z.array(Todo))` で検査し、`done` が `true` の件数が 1 であることを確認する。
+4. `POST /api/reset` が `204` を返し、その後の `GET /api/todos` が空配列であることを確認する。
+
+詰まったらページ下部の『模範解答を見る』（`reset.e2e.ts`）を確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| 2 回目の `request` でデータが無い | `request` は cookie を保持しないので別セッションになった | `X-Session-Id` ヘッダーか `browser.cookies(path)` を付ける |
+| `response.headers.get is not a function` | `WebResponse.headers` は `Headers` ではなく plain object | `response.headers['content-type']` のように小文字キーで読む |
+| 自作フィクスチャの `request` が組み込みと衝突する | `request` は `e2e@0.25.0` の予約組み込みフィクスチャ | ラッパーフィクスチャには `api` など別名を付ける |
+| `toMatchSchema` で `expected number, received string` | API の形が変わった、またはスキーマの誤り | どちらが正しいか決めて直す。これが狙い |
+| `toEqual` が余計なキーで失敗 | 完全一致を求めた | `toMatchObject` か `expect.objectContaining` を使う |
+| `STEP_NOT_AWAITED` | `expect.poll` や `request.*` を `await` し忘れた | すべてのステップ呼び出しを `await` する |
+| `APP_URL_REQUIRED` | エンジン無しターゲットで相対パスを `request` に渡した | `${API_URL}/...` のように絶対 URL を渡す |
+| `INVALID_CONFIG` でエンジン無しターゲット | `app` を書いた、または `platform` が無い | `app` を外して `platform` を書く |
+
+## まとめ
+
+- API テストは組み込みの `request` フィクスチャ + `expect(response).toBeOK()` + 値のマッチャー（`toMatchSchema`）で書く。各呼び出しはレポートのステップとして記録され、`actionTimeout` が効く。
+- `request` は cookie を保持しない。セッション ID をヘッダーで渡すか、`browser.cookies('/api/...')` で対象 URL の cookie だけを安全に引き継ぐ。
+- 後から揃う値は `expect.poll`。
+- API だけのスイートはエンジン無しターゲットを別 config（`e2e.api.config.ts`）に分ける。
+
+次の第 11 章では、繰り返し使う画面操作を「ページオブジェクト」にまとめ、スクリーンショット比較で見た目の崩れを検出します。

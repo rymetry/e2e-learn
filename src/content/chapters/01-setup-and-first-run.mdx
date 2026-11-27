@@ -1,0 +1,267 @@
+---
+chapterNumber: "01"
+order: 1
+part: "part-1"
+title: "セットアップと初回実行"
+summary: "e2e プロジェクトの構成、e2e init の仕組み、npx e2e run の出力と結果ファイル（report.json / trace.md）、最初の失敗ブロックの読み方を学びます。"
+modelRequirement: "none"
+estimatedMinutes: 20
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 00 章の 5 つの構文が読めること"
+  - "環境セットアップ（my-e2e-hands-on/）が完了していること"
+solutionFiles:
+  - filename: "todos-opens.e2e.ts"
+    lang: "ts"
+    sourcePath: "01-setup-and-first-run/todos-opens.e2e.ts"
+---
+
+## この章で分かること
+
+- e2e inc.（旧 TesterArmy）が提供するテストフレームワーク `e2e` のプロジェクトが、どんなファイルでできているか（`package.json`、`e2e.config.ts`、テストファイル）。
+- `npx e2e init` が何を作ってくれるかと、`npx e2e run` の出力の読み方。
+- 結果ファイル（`.e2e/report.json`、`trace.md`）の場所と読み方。
+- 「アプリに届かない」という最初の失敗を自分で起こして、失敗ブロックを読む手順。
+
+## 前提
+
+- [第 00 章](/chapters/00-typescript-basics/)の 5 つの構文が読めること。
+- [環境セットアップ](/setup/)で `my-e2e-hands-on/` を作成し、`e2e` と `@e2e-dev/web` のインストールが済んでいること。
+- モデルは不要です。練習用アプリは公開 URL のものをそのまま使うため、サーバーを起動する必要はありません。
+
+## 一緒に書く
+
+### 1. 入っているものを確認する
+
+`my-e2e-hands-on/` ディレクトリでバージョンを確認します（Web テストは Node.js 24.8 以上 / 22.22.3 以上に加え、Bun 1.4.3 以上でも動作します）。
+
+```bash
+node --version        # v24.8 以上（Node.js 22 なら 22.22.3 以上。Bun なら 1.4.3 以上）
+npx e2e --version     # 0.25.0
+```
+
+`package.json` を開くと、核になる依存は 2 つです。
+
+```json
+{
+  "devDependencies": {
+    "e2e": "0.25.0",
+    "@e2e-dev/web": "0.17.0"
+  }
+}
+```
+
+- `e2e`: ランナー本体です。CLI、`expect`、`test` などを持ちます。
+- `@e2e-dev/web`: ブラウザを動かすエンジンです（Playwright を内蔵）。
+
+なお、既存アプリへ新しく e2e を導入するときは `npx e2e init` を使います。`e2e@0.25.0` の対話ウィザードでは次の項目を選べます。
+
+- **エンジン**: Web（Playwright）、Mobile（iOS/Android）、またはなし（API テストのみ等）。
+- **モデル**: サブスクリプション、API ゲートウェイ、または AI 無しで始めるための **Skip for now**。
+- **フレームワーク自動検出**: Next.js アプリ（`package.json` に `next` があるプロジェクト）では、`app.url` に `http://localhost:<port>`、`app.command` に `dev`（CI では本番ビルドの `start`）を自動で書き込みます。
+- **コーディングエージェント連携**: `.agents/skills/e2e/` や `.claude/skills/e2e/` へスキルを配置し、`AGENTS.md` / `CLAUDE.md` にスキル参照行を自動追記します。MCP 設定や CI ワークフロー（GitHub Actions / GitLab CI）の生成も選べます。
+
+### 2. 設定ファイルを読む
+
+`my-e2e-hands-on/e2e.config.ts` を開いてください。今の章に関係する部分だけ抜き出します。
+
+```ts
+export default {
+  tests: ['tests/**/*.e2e.ts'],          // テストファイルの探し方
+  trace: 'on',                           // 通ったテストにも記録（trace.md）を残す
+  targets: [{ engine: web(), app }],     // 「ブラウザで」「このアプリを」テストする
+  // agents: { ... },                    // 第 06 章で設定する
+} satisfies E2EConfig;
+```
+
+- **`tests`**: どのファイルをテストとして拾うか。このワークスペースでは `tests/` 配下の `*.e2e.ts` をすべて拾います。
+- **`targets`**: テストを動かす場所です。`engine: web()` がブラウザ、`app` がテスト対象のアプリの場所です。
+- **`app`**: 既定では練習用アプリの公開 URL（`https://test-automation-practice-app.rymetry.workers.dev`）を指します。`APP_URL` 環境変数で別の場所に向けられます。
+
+`satisfies E2EConfig` は「この設定が正しい形か TypeScript にチェックさせる」という意味で、実行内容には影響しません。
+
+### 3. 最初のテストを書く
+
+`tests/01-setup-and-first-run/example.e2e.ts` を作ります。中身は `e2e init` が生成する最小の雛形と同じです。
+
+```ts
+// tests/01-setup-and-first-run/example.e2e.ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('app opens', async ({ app, browser }) => {
+  await app.open('/');
+  await expect(browser.locator('body')).toBeVisible();
+});
+```
+
+第 00 章の構文で 1 行ずつ読めます。
+
+| 行 | 意味 |
+| --- | --- |
+| `import { test } from '@e2e-dev/web'` | ブラウザ用の `test` を借りる（`browser` フィクスチャが型付きで使える版） |
+| `import { expect } from 'e2e'` | 「こうなっているはず」を書くための `expect` を借りる |
+| `test('app opens', async ({ app, browser }) => { ... })` | `app opens` という名前のテストを登録する。本体は `async` のアロー関数で、道具箱から `app` と `browser` を取り出す |
+| `await app.open('/')` | アプリのトップページを開く。時間がかかるので `await` |
+| `await expect(browser.locator('body')).toBeVisible()` | ページの `body` が見えていることを確認する。これも待つので `await` |
+
+`app`、`browser`、`screen`、`agent` のような道具を **フィクスチャ** と呼びます。テストが始まるときに e2e が用意し、終わると片付けます。自分で `new` したり閉じたりする必要はありません。
+
+### 4. 実行する
+
+この章のディレクトリだけを実行します。
+
+```bash
+npx e2e run tests/01-setup-and-first-run
+```
+
+初回実行時にブラウザが無ければ e2e が自動でダウンロードします。出力は次のようになります（時間などは環境で変わります）。
+
+```text
+ RUN  e2e v0.25.0 /Users/.../my-e2e-hands-on
+      run 01a185cd-… · targets: web
+
+ ✓ |web| tests/01-setup-and-first-run/example.e2e.ts (1 test) 954ms
+   ✓ app opens 954ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  12:56:44
+   Duration  1.45s
+     Traces  .e2e/results/ (1 page, trace.md in each test's directory)
+```
+
+**観察ポイント**
+
+- `targets: web` は config の `targets` に対応します。`|web|` がファイル名の前に付くのはそのためです。
+- モデルを未設定（Skip for now）のままでも、`agent` を使わないテストは問題なく通ります。
+- 最後の `Traces` 行が、実行記録の置き場所を教えてくれます。
+
+### 5. 結果ファイルを読む
+
+実行のたびに `.e2e/` に 2 種類のファイルが書かれます。
+
+**`.e2e/report.json`**: 実行全体の機械可読な記録です。スクリプトや CI が読むためのものです。中身を少しだけ見てみます。
+
+```bash
+node -e "const r=require('./.e2e/report.json').run; console.log(r.summary); console.log(r.results.map(t => [t.titlePath.join(' > '), t.status]))"
+```
+
+```text
+{ discovered: 1, selected: 1, executed: 1, passed: 1, failed: 0, ... }
+[ [ 'app opens', 'passed' ] ]
+```
+
+`run.summary` が件数、`run.results` がテストごとの結果です。`report.json` は実行のたびに上書きされます。
+
+**`.e2e/results/<テスト名-ハッシュ>/trace.md`**: テスト 1 つ分の人間向けの記録です。
+
+```bash
+cat .e2e/results/example-app-opens-*/trace.md
+```
+
+```markdown
+# ✓ app opens
+
+`tests/01-setup-and-first-run/example.e2e.ts` · passed · 954ms
+
+Ran on: browser `chromium 159.0.8154.6` · user agent `…`
+
+## Steps
+
+1. ✓ `app.open` `/` (475ms) — `tests/01-setup-and-first-run/example.e2e.ts:5`
+   - screen: 20 nodes at `https://test-automation-practice-app.rymetry.workers.dev/`
+2. ✓ `expect.toBeVisible` `locator("body")` (23ms) — `tests/01-setup-and-first-run/example.e2e.ts:6`
+```
+
+**観察ポイント**
+
+- `## Steps` にテストの 1 行ごとの結果が、ファイル名と行番号付きで並びます。
+- `screen: 20 nodes` は、開いた画面を e2e が「20 個の部品」として見ている、という意味です。[第 02 章](/chapters/02-locators/)で、この部品（ロール）がロケータの土台になります。
+- 通ったテストの `trace.md` が書かれているのは、config の `trace: 'on'` のおかげです。既定（`retain-on-failure`）では失敗したときだけ書かれます。
+
+### 6. わざと失敗させる
+
+アプリに届かないとどうなるかを見ます。`APP_URL` で誰もいないポートを指します。
+
+```bash
+APP_URL=http://localhost:3999 npx e2e run tests/01-setup-and-first-run
+```
+
+```text
+ ❯ |web| tests/01-setup-and-first-run/example.e2e.ts (1 test | 1 failed) 582ms
+   × app opens 582ms
+     → nothing answered at http://localhost:3999/ (ERR_CONNECTION_REFUSED); sta…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |web| tests/01-setup-and-first-run/example.e2e.ts > app opens
+APP_UNREACHABLE: nothing answered at http://localhost:3999/ (ERR_CONNECTION_REFUSED); start the app there, point the target's app.url at where it runs, or give the target an app.command so the runner starts it
+ ❯ tests/01-setup-and-first-run/example.e2e.ts:5:3
+      3|
+      4| test('app opens', async ({ app, browser }) => {
+      5|   await app.open('/');
+       |   ^
+      6|   await expect(browser.locator('body')).toBeVisible();
+      7| });
+ ❯ app 1 error logged
+ ❯ trace .e2e/results/example-app-opens-2ce2f39f1e8d98a9/trace.md
+```
+
+**観察ポイント**: 失敗ブロックは上から順に読みます。
+
+1. **エラーコードとメッセージ**: `APP_UNREACHABLE: …`。コードは大文字の固定の名前で、メッセージに直し方の候補まで書いてあります（全コードの一覧は[エラーコード辞書](/errors/)にあります）。
+2. **どの行か**: `❯ ファイル:行:列` と、その行を `^` で指したコード片。
+3. **アプリ側のログ**: `❯ app 1 error logged`。ブラウザのコンソールに出たエラーの数です。
+4. **記録の場所**: `❯ trace …/trace.md`。開くと、失敗した瞬間の画面（`## Screen at failure`）とスクリーンショットへのリンクがあります。
+
+失敗のたびにこの 4 つを見る癖を付けると、[第 08 章](/chapters/08-debugging/)のデバッグが楽になります。
+
+`APP_URL` を付けずにもう一度実行すると、元どおり通ります。
+
+### 7. テストを 1 つだけ実行する
+
+ファイル名の後ろに `:行番号` を付けると、その行で始まるテストだけ実行できます。この後の章で何度も使います。
+
+```bash
+npx e2e run tests/01-setup-and-first-run/example.e2e.ts:4
+```
+
+行番号は `test(` が書かれている行です（この例では 4 行目）。
+
+## 読む
+
+- [Quickstart](https://e2e.com/docs/quickstart): 「Set up manually」の節。`e2e init` が何を置くか。
+- [Core concepts](https://e2e.com/docs/core-concepts): 全体像。ゴール（agent）、アサーション、ロケータの関係。この章では流し読みで構いません。
+- [CLI リファレンス](https://e2e.com/docs/reference/cli): `e2e init` と `e2e run` の引数（「Selection」の節を中心に）。
+- オフライン参照・CLI 補足: 同じドキュメントは `node_modules/e2e/docs/` にも同梱されており、`npx e2e guide running` で同梱スキルの実行ガイドを端末から直接読めます（`npx e2e guide` でトピック一覧）。
+
+## 自分の言葉で書き直す
+
+`tests/01-setup-and-first-run/todos-opens.e2e.ts` を新しく作り、次を満たすテストを書いてください。
+
+1. `/todos` を開く。
+2. URL が `/todos` になっていることを `expect(browser).toHaveURL('/todos')` で確認する。
+3. `body` が見えていることを確認する。
+
+`npx e2e run tests/01-setup-and-first-run` で 2 つのテストが通れば合格です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `NO_TESTS` | ファイル名が `*.e2e.ts` でない、または `tests/` の外に置いた | `tests/01-setup-and-first-run/<名前>.e2e.ts` に置く |
+| `APP_UNREACHABLE` | `APP_URL` の指す先にアプリがいない | URL を確認する。公開 URL なら `APP_URL` を外す |
+| `NODE_UNSUPPORTED` | Node.js のバージョンが古い | Node.js 24.8 以上（または 22.22.3 以上）へ上げる |
+| `MODEL_UNAVAILABLE` | `agent` フィクスチャを使ったのにモデルが未設定 | この章では `agent` を使わない。[第 06 章](/chapters/06-agent-steps/)で設定する |
+| `:行番号` を付けたのに別のテストが走る | 上の行を編集して行番号がずれた | `test(` の行番号を数え直す |
+
+## まとめ
+
+- プロジェクトは `package.json`（版の管理）、`e2e.config.ts`（どこで何をテストするか）、`tests/**/*.e2e.ts`（テスト本体）でできている。
+- `npx e2e run <ディレクトリ>` で章ごとに、`<ファイル>:<行>` でテスト 1 つだけ実行できる。
+- 結果は `.e2e/report.json`（機械向け）と `.e2e/results/<テスト>/trace.md`（人間向け）に残る。
+- 失敗ブロックは「エラーコード → 行 → アプリのログ → trace」の順に読む。
+
+次の[第 02 章: ロケータ](/chapters/02-locators/)では、`body` のような雑な指定ではなく、「"Add" というボタン」「"New todo" という入力欄」のように画面の部品を正確に指す方法を学びます。

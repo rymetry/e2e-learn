@@ -1,0 +1,514 @@
+---
+import { Code } from 'astro-expressive-code/components';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const requestSnippet = `import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('API でデータ作成して一覧を検証する', async ({ request, browser, screen, app }) => {
+  const res = await request.post('/api/todos', {
+    json: { title: 'リリース確認' },
+  });
+  expect(res).toBeOK();
+
+  const cookies = await browser.cookies('/api/todos');
+  expect(cookies.length).toBeGreaterThan(0);
+
+  await app.open('/');
+  await expect(screen.getByText('リリース確認')).toBeVisible();
+});`;
+
+const fixtureSnippet = `import { test as base } from '@e2e-dev/web';
+
+// テストフィクスチャは第 1 型引数、Worker フィクスチャは第 2 型引数へ定義
+export const test = base.extend<{ seed: void }, { apiToken: string }>({
+  apiToken: [
+    async ({}, use) => {
+      await use('token-from-worker');
+    },
+    { scope: 'worker' },
+  ],
+  seed: [
+    async ({ request }, use) => {
+      await request.post('/api/reset');
+      await use();
+    },
+    { auto: true },
+  ],
+});
+
+test('Web 限定で実行', { platforms: ['web'] }, async ({ app }) => {
+  await app.open('/');
+});`;
+
+const reporterSnippet = `import { htmlReporter } from '@e2e-dev/html-reporter';
+import { web } from '@e2e-dev/web';
+import { defineConfig } from 'e2e';
+import { junit } from 'e2e/reporters';
+
+export default defineConfig({
+  tests: ['tests/**/*.e2e.ts'],
+  targets: [
+    {
+      engine: web(),
+      app: { url: 'https://test-automation-practice-app.rymetry.workers.dev' },
+    },
+  ],
+  reporters: [
+    'list',
+    junit({ outputFile: 'reports/junit.xml' }),
+    htmlReporter(),
+  ],
+});`;
+---
+
+<BaseLayout
+  title="クイックリファレンス"
+  description="e2e 0.25.0 と @e2e-dev/web 0.17.0 のロケータ優先順、expect マッチャー、request フィクスチャ、AI Agent API、CLI、レポーター早見表。"
+  isHome={false}
+>
+  <div class="ref-page lab-container">
+    <header class="ref-header">
+      <h1 class="ref-h1">クイックリファレンス</h1>
+      <div class="ref-meta-row tabular-nums">
+        <span class="meta-mono">e2e 0.25.0</span>
+        <span class="meta-sep" aria-hidden="true">/</span>
+        <span class="meta-mono">@e2e-dev/web 0.17.0</span>
+        <span class="meta-sep" aria-hidden="true">/</span>
+        <span class="meta-mono">@e2e-dev/github 0.4.7</span>
+      </div>
+    </header>
+
+    <nav class="ref-jump-nav" aria-label="リファレンス目次">
+      <a href="#locators">ロケータ優先順</a>
+      <a href="#expect">expect マッチャー</a>
+      <a href="#request">request・ネットワーク</a>
+      <a href="#agent">AI Agent API</a>
+      <a href="#cli">CLI・ステップ実行</a>
+      <a href="#reporters">レポーター・設定</a>
+    </nav>
+
+    <div class="ref-sections">
+      <!-- 1. Locators -->
+      <section id="locators" class="ref-section">
+        <h2 class="lab-heading">ロケータ優先順と操作 API</h2>
+        <p class="ref-lead">
+          アクセシビリティ属性に基づくロケータを優先すると、DOM 構造や CSS クラス変更に強いテストになります（詳細は
+          <a href="/chapters/02-locators/" class="lab-link">第 02 章</a>）。
+        </p>
+
+        <div class="table-wrap">
+          <table class="ref-table">
+            <thead>
+              <tr>
+                <th>優先度</th>
+                <th>API</th>
+                <th>用途とポイント</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono-accent">1</td>
+                <td class="mono-cell">screen.getByRole(role, &#123; name &#125;)</td>
+                <td>ボタン・リンク・見出し・チェックボックスなど最優先で使用</td>
+              </tr>
+              <tr>
+                <td class="mono-accent">2</td>
+                <td class="mono-cell">screen.getByLabel(text)</td>
+                <td>ラベルと紐づくフォーム入力欄の取得</td>
+              </tr>
+              <tr>
+                <td class="mono-accent">3</td>
+                <td class="mono-cell">screen.getByPlaceholder(text)</td>
+                <td>ラベルがない検索欄などのフォールバック</td>
+              </tr>
+              <tr>
+                <td class="mono-accent">4</td>
+                <td class="mono-cell">screen.getByText(text)</td>
+                <td>見出しや本文テキストの表示確認</td>
+              </tr>
+              <tr>
+                <td class="mono-accent">5</td>
+                <td class="mono-cell">screen.getByTestId(id)</td>
+                <td>動的な表示文言で一意指定しにくい要素の最終手段</td>
+              </tr>
+              <tr>
+                <td class="mono-muted">操作拡張</td>
+                <td class="mono-cell">locator.blur() / tap(&#123; count &#125;) / setInputFiles(&#123; name, mimeType, buffer &#125;)</td>
+                <td>0.25.0 系で追加されたフォーカス解除、連続タップ、インメモリファイル送信</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 2. expect -->
+      <section id="expect" class="ref-section">
+        <h2 class="lab-heading">主要 expect マッチャー</h2>
+        <p class="ref-lead">
+          Web 要素向けマッチャーは条件を満たすまで自動リトライします（詳細は
+          <a href="/chapters/03-expect/" class="lab-link">第 03 章</a>）。
+        </p>
+
+        <div class="table-wrap">
+          <table class="ref-table">
+            <thead>
+              <tr>
+                <th>マッチャー</th>
+                <th>検証内容</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono-cell">toBeVisible() / toBeHidden()</td>
+                <td>要素の表示・非表示状態</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">toHaveText() / toContainText()</td>
+                <td>完全一致または部分一致テキスト</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">toHaveValue() / toBeChecked() / toBeDisabled()</td>
+                <td>入力値（ARIA ウィジェット含む）・チェック・活性状態</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">toHaveCount(n) / toBeEmpty()</td>
+                <td>要素件数、および入力欄やコンテナが空であること</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">toBeInViewport(&#123; ratio &#125;)</td>
+                <td>指定割合以上がビューポート内に収まっていること</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">expect(response).toBeOK()</td>
+                <td>request フィクスチャ応答が 2xx であること</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">expect(fn).toPass() / expect.poll(fn, &#123; intervals &#125;)</td>
+                <td>複数検証ブロックや非同期値のポーリングリトライ</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 3. request & browser -->
+      <section id="request" class="ref-section">
+        <h2 class="lab-heading">request フィクスチャとブラウザ制御</h2>
+        <p class="ref-lead">
+          <code>e2e 0.25.0</code> では組み込み <code>request</code> フィクスチャが標準提供されます（詳細は
+          <a href="/chapters/05-app-and-browser/" class="lab-link">第 05 章</a>・
+          <a href="/chapters/10-api-testing/" class="lab-link">第 10 章</a>）。自作フィクスチャに
+          <code>request</code> という名前を付けると衝突するため避けてください。
+        </p>
+
+        <Code code={requestSnippet} lang="ts" title="request フィクスチャと cookies()" />
+
+        <div class="table-wrap">
+          <table class="ref-table">
+            <thead>
+              <tr>
+                <th>API</th>
+                <th>役割</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono-cell">request.get / post / put / patch / delete / head / fetch</td>
+                <td>app.url 基準の相対パス解決・json オプション・actionTimeout・レポート記録に対応</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">browser.cookies(urls?)</td>
+                <td>URL 指定で Cookie を取得し API リクエストへ引き継ぎ可能</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">browser.setNetwork('offline' | 'online')</td>
+                <td>オフライン障害や再接続時の UI 挙動を検証</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">browser.route / waitForResponse / waitForURL</td>
+                <td>Playwright 互換 URL glob（? はリテラル、&#123;a,b&#125; 展開、相対パスは app.url 解決）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 4. AI Agent -->
+      <section id="agent" class="ref-section">
+        <h2 class="lab-heading">AI Agent API とリプレイキャッシュ</h2>
+        <p class="ref-lead">
+          自然言語ステップを初回のみ推論し、2 回目以降はキャッシュ手順をゼロトークンで再生します（詳細は
+          <a href="/chapters/06-agent-steps/" class="lab-link">第 06 章</a>・
+          <a href="/chapters/07-replay-cache/" class="lab-link">第 07 章</a>）。
+        </p>
+
+        <div class="table-wrap">
+          <table class="ref-table">
+            <thead>
+              <tr>
+                <th>メソッド / フラグ</th>
+                <th>用途</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono-agent">agent.act(instruction)</td>
+                <td>自然言語で操作を実行し、解決手順をリプレイキャッシュへ保存</td>
+              </tr>
+              <tr>
+                <td class="mono-agent">agent.assert(condition)</td>
+                <td>画面状態を自然言語で検証（曖昧な場合は ASSERTION_INCONCLUSIVE）</td>
+              </tr>
+              <tr>
+                <td class="mono-agent">agent.waitFor(condition)</td>
+                <td>目的の画面状態になるまで待機</td>
+              </tr>
+              <tr>
+                <td class="mono-agent">agent.extract(prompt)</td>
+                <td>画面からテキスト・数値・構造化データを抽出</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">--strict-cache / --no-cache</td>
+                <td>キャッシュ未ヒット時に即失敗（CI 向け）、またはキャッシュを使わず再推論（削除は e2e cache clear）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 5. CLI & Step Debugging -->
+      <section id="cli" class="ref-section">
+        <h2 class="lab-heading">CLI コマンドとステップ実行デバッグ</h2>
+        <p class="ref-lead">
+          対話ステップ実行・HTML レポート閲覧・PR 差分ベースの自動探索を CLI から直接呼び出せます（詳細は
+          <a href="/chapters/08-debugging/" class="lab-link">第 08 章</a>・
+          <a href="/chapters/13-explore/" class="lab-link">第 13 章</a>）。
+        </p>
+
+        <div class="table-wrap">
+          <table class="ref-table">
+            <thead>
+              <tr>
+                <th>コマンド / フラグ</th>
+                <th>説明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono-cell">npx e2e run [path]</td>
+                <td>テストを実行。複数レポーター併用（--reporter list,json）に対応</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">npx e2e run --step</td>
+                <td>1 ステップずつ一時停止（TTY キー: Enter / s / l / n / a / q、非 TTY: --step next|rest|stop）</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">await screen.pause()</td>
+                <td>任意箇所で一時停止。MCP open_session &#123; attach &#125; で接続可能</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">npx e2e report</td>
+                <td>@e2e-dev/html-reporter が生成した HTML レポートをブラウザで開く</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">npx e2e merge-reports</td>
+                <td>シャード並列実行の複数レポートを 1 つに統合</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">npx e2e explore --changed-since origin/main</td>
+                <td>PR のタイトル・本文・差分を踏まえて影響範囲を自律探索</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">npx e2e login &lt;provider&gt;</td>
+                <td>openai / github-copilot / opencode-console / spacexsi のサブスクリプション認証</td>
+              </tr>
+              <tr>
+                <td class="mono-cell">npx e2e mcp</td>
+                <td>コーディングエージェント向け MCP サーバーを起動（run_code / open_session）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 6. Reporters & Fixtures -->
+      <section id="reporters" class="ref-section">
+        <h2 class="lab-heading">フィクスチャ・プラットフォーム指定・レポーター</h2>
+        <p class="ref-lead">
+          <code>e2e 0.25.0</code> ではフィクスチャが遅延評価になり、<code>requires</code> の代わりに
+          <code>&#123; platforms: ['web'] &#125;</code> を指定します（詳細は
+          <a href="/chapters/04-test-structure/" class="lab-link">第 04 章</a>・
+          <a href="/chapters/12-ci-and-reporters/" class="lab-link">第 12 章</a>）。
+        </p>
+
+        <div class="code-grid">
+          <Code code={fixtureSnippet} lang="ts" title="フィクスチャと platforms 指定" />
+          <Code code={reporterSnippet} lang="ts" title="レポーター設定（list / dot / line / json / junit / ctrf / htmlReporter）" />
+        </div>
+      </section>
+    </div>
+  </div>
+</BaseLayout>
+
+<style>
+  .ref-page {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+  }
+
+  .ref-header {
+    margin-bottom: 1.5rem;
+  }
+
+  .ref-h1 {
+    margin: 0 0 0.75rem;
+    font-size: clamp(1.75rem, 3.2vw, 2.25rem);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: var(--text-primary);
+  }
+
+  .ref-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    padding-block: 0.625rem;
+    border-top: 1px solid var(--border-hairline);
+    border-bottom: 1px solid var(--border-hairline);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .meta-sep {
+    color: var(--border-hairline);
+  }
+
+  .meta-mono {
+    font-family: var(--font-mono);
+  }
+
+  .ref-jump-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+    padding-block: 0.75rem;
+    margin-bottom: 2rem;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .ref-jump-nav a {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color 160ms var(--ease-precision);
+  }
+
+  .ref-jump-nav a:hover {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .ref-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  .ref-section {
+    scroll-margin-top: 5rem;
+  }
+
+  .ref-section h2 {
+    margin: 0 0 0.625rem;
+  }
+
+  .ref-lead {
+    margin: 0 0 1.25rem;
+    max-width: 65ch;
+    color: var(--text-muted);
+  }
+
+  .ref-lead code {
+    font-size: var(--text-sm);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 3px;
+    padding: 0.1rem 0.35rem;
+    color: var(--text-primary);
+  }
+
+  .table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border-top: 1px solid var(--border-hairline);
+    margin-top: 1rem;
+  }
+
+  .ref-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .ref-table thead {
+    background-color: var(--bg-surface);
+  }
+
+  .ref-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-hairline);
+    white-space: nowrap;
+  }
+
+  .ref-table td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-hairline);
+    vertical-align: top;
+    color: var(--text-primary);
+  }
+
+  .mono-cell {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .mono-accent {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--accent) !important;
+  }
+
+  .mono-agent {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--semantic-agent) !important;
+  }
+
+  .mono-muted {
+    font-family: var(--font-mono);
+    color: var(--text-muted) !important;
+  }
+
+  .code-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+    margin-top: 1rem;
+  }
+
+  @media (min-width: 960px) {
+    .code-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

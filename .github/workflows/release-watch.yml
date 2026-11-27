@@ -1,0 +1,51 @@
+# 週 1 回、e2e-inc/e2e の新しいリリースを調べ、あれば影響する章・ページを書いた Issue を立てる。
+name: Release watch
+
+on:
+  schedule:
+    - cron: '0 0 * * 1' # 毎週月曜 09:00 JST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# Actions はコミットの SHA で固定する。更新は Dependabot(.github/dependabot.yml)が提案する。
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Compare releases with the lock
+        id: diff
+        run: |
+          # Issue 本文の上限は 65536 文字なので、余裕を持たせて省略する
+          node scripts/release-diff.mjs --max-chars 60000 > release-diff.md
+          if grep -qx 'NO_NEW_RELEASES' release-diff.md; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            # 最新タグ（最後の見出し）を Issue のタイトルに使う
+            newest=$(grep -E '^## ' release-diff.md | tail -1 | sed -E 's/^## ([^（]+).*/\1/')
+            echo "newest=$newest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open an issue unless one exists
+        if: steps.diff.outputs.new == 'true'
+        env:
+          TITLE: 'e2e リリース追従: ${{ steps.diff.outputs.newest }}'
+        run: |
+          if gh issue list --state open --search "\"$TITLE\" in:title" --json title --jq '.[].title' | grep -Fxq "$TITLE"; then
+            echo "既に Issue があります: $TITLE"
+          else
+            gh issue create --title "$TITLE" --body-file release-diff.md --label docs-sync || gh issue create --title "$TITLE" --body-file release-diff.md
+          fi

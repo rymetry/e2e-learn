@@ -1,7 +1,42 @@
 {
+  "name": "e2e-learn",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@10.8.0",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build && pagefind --site dist",
+    "preview": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "check": "astro check && biome check .",
+    "test": "vitest run",
+    "mutate": "mutator --since origin/main",
+    "release:diff": "node scripts/release-diff.mjs"
+  },
   "devDependencies": {
-    "@mizchi/mutator": "0.5.5"
+    "@astrojs/check": "^0.9.12",
+    "@biomejs/biome": "^2.6.9",
+    "@mizchi/mutator": "0.5.5",
+    "@types/node": "^24",
+    "pagefind": "^1.6.0",
+    "typescript": "^6.0.3",
+    "vitest": "^5",
+    "wrangler": "^4.168.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "workerd"
+    ]
+  },
+  "dependencies": {
+    "@astrojs/mdx": "^8.1.6",
+    "@astrojs/sitemap": "^3.7.6",
+    "@tailwindcss/vite": "^4.3.5",
+    "astro": "^7.4.13",
+    "astro-expressive-code": "^0.44.4",
+    "sharp": "^0.35.5",
+    "tailwindcss": "^4.3.5"
   }
 }

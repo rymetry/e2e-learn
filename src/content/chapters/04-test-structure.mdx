@@ -1,0 +1,339 @@
+---
+chapterNumber: "04"
+order: 4
+part: "part-1"
+title: "テストの構造"
+summary: "describe・フック・オプション（tags/platforms/serial/parallel）・test.fixme/todo/setTimeout/slow、そしてオンデマンド評価と厳格分割代入・worker スコープを備えた test.extend フィクスチャを学びます。"
+modelRequirement: "none"
+estimatedMinutes: 30
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "第 03 章を終えていること"
+solutionFiles:
+  - filename: "ambiguous.e2e.ts"
+    lang: "ts"
+    sourcePath: "04-test-structure/ambiguous.e2e.ts"
+---
+
+## この章で分かること
+
+- `describe` でテストをまとめ、`beforeEach` / `afterEach` / `beforeAll` / `afterAll` で共通の準備と後片付けをする。
+- テストのオプションと API: `tags`、`timeout`、`platforms`、`skip`、`fixme`、`todo`、`setTimeout` / `slow`、`serial`、`parallel`（ファイル内並列実行）。
+- `test.extend` で**自分の道具（フィクスチャ）**を作る。オンデマンド実行、`auto: true`、厳格な分割代入、worker スコープの仕組みを理解する。
+
+## 前提
+
+- [第 03 章](/chapters/03-expect/)を終えていること。
+- モデルは不要です。
+
+## 一緒に書く
+
+### 1. まとめる、準備する、片付ける
+
+`tests/04-test-structure/structure.e2e.ts` を作ります。
+
+```ts
+// tests/04-test-structure/structure.e2e.ts
+import { afterEach, beforeAll, beforeEach, describe, test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+beforeAll(async ({ platform }) => {
+  console.log(`suite starts on ${platform}`);
+});
+
+describe('todos page', { tags: ['todos'] }, () => {
+  beforeEach(async ({ app }) => {
+    await app.open('/todos');
+  });
+
+  afterEach(async ({ app }) => {
+    await app.screenshot('after'); // 失敗したときも撮られる
+  });
+
+  test('starts empty', { tags: ['smoke'] }, async ({ screen }) => {
+    await expect(screen.getByRole('status')).toHaveText('0 remaining');
+  });
+
+  test('adds a todo', async ({ screen }) => {
+    await screen.getByLabel('New todo').fill('Buy milk');
+    await screen.getByRole('button', 'Add').tap();
+    await expect(screen.getByRole('status')).toHaveText('1 remaining');
+  });
+});
+```
+
+```bash
+npx e2e run tests/04-test-structure/structure.e2e.ts
+```
+
+**観察ポイント**
+
+- `describe('todos page', ...)` でまとめると、テスト名が `todos page > starts empty` のように階層になります。
+- `beforeEach` は各テストの**前に毎回**動きます。2 つのテストから `app.open('/todos')` が消えました。
+- `afterEach` は各テストの**後に毎回**、失敗しても動きます。`app.screenshot('after')` の画像は `.e2e/results/<テスト>/attempt-1/screenshots/001-after.png` に残り、`trace.md` からリンクされます。
+- `beforeAll` / `afterAll` はスイートの開始・終了ごとに 1 回動き、**worker スコープのフィクスチャ**（組み込みの `platform` や `services`、および後述の自作 worker フィクスチャ）を受け取れます。Web ターゲットでは `app`・`screen`・`browser` はテストごとに作り直される test スコープなので、`beforeAll` で受け取ろうとすると `COLLECTION_ERROR` になります。UI の準備は `beforeEach` に置きます（モバイルターゲットでは `device` / `app` / `screen` も worker スコープです）。
+- `console.log` の出力は `stdout | |web| ファイル > テスト名` という見出しの下に出ます。
+
+`import` の行を見てください。`describe` や `beforeEach` も `@e2e-dev/web` から借りています。`e2e` からも借りられますが、`browser` フィクスチャを型付きで使うには `@e2e-dev/web` の方が要ります。
+
+### 2. テストのオプションと制御 API
+
+`test('名前', { オプション }, 本体)` の形で、テストごとに設定を変えられます。また、実行中の条件や未実装・既知不具合を表す専用 API も揃っています。
+
+```ts
+  test('a slow flow gets more time', { timeout: 30_000 }, async ({ screen }) => {
+    await expect(screen.getByRole('heading', 'Todos')).toBeVisible();
+  });
+
+  test('skips when a precondition is missing', async ({ screen }) => {
+    const items = await screen.getByRole('list', 'Todos').getByRole('listitem').count();
+    test.skip(items === 0, 'needs an existing todo'); // 条件が真なら、ここでスキップ
+    await screen.getByRole('checkbox').first().check();
+  });
+
+  // Web ターゲットだけで動かすテスト（複数プラットフォーム構成で使う）
+  test('closes menu with Escape', { platforms: ['web'] }, async ({ browser }) => {
+    await browser.keyboard.press('Escape');
+  });
+
+  // 実行中に動的にタイムアウトを変更・3 倍にする
+  test('dynamic timeout adjustment', async ({ screen }) => {
+    test.slow(); // この試行のタイムアウトを 3 倍にする（条件付き test.slow(cond, reason) も可）
+    test.setTimeout(60_000); // この試行のタイムアウトを 60 秒へ上書き
+    await expect(screen.getByRole('heading', 'Todos')).toBeVisible();
+  });
+
+  // 既知の不具合で一時的にスキップ（レポートには skip.cause = 'fixme' と記録される）
+  test.fixme('export PDF button works', async ({ app }) => {
+    await app.open('/todos');
+  });
+
+  // これから書く予定のテスト（本体は渡さない。レポートには skip.cause = 'todo' と記録される）
+  test.todo('filter completed todos');
+```
+
+| オプション / API | 意味 | 既定・補足 |
+| --- | --- | --- |
+| `tags: ['smoke']` | 絞り込み用のラベル。`describe` に付けると中の全テストに付く | なし |
+| `timeout: 30_000` | `beforeEach` と本体を合わせた制限時間（ミリ秒） | 120 秒 |
+| `retries: 2` | 失敗したときの再試行回数 | 0（CI では 1） |
+| `platforms: ['web']` | このテストを実行するプラットフォーム。他ターゲットではスキップ | 全ターゲット（旧 `requires` オプションは廃止され `COLLECTION_ERROR`） |
+| `skip: '理由'` / `test.skip(...)` | 登録時点または実行時にスキップ | 実行時形式は前提確認を最初のステップ前に置く |
+| `test.fixme(...)` | 既知不具合としてスキップ（`skip.cause: 'fixme'`） | 登録形式・実行時条件形式の両対応 |
+| `test.todo('タイトル')` | 未実装テストのプレースホルダ（`skip.cause: 'todo'`） | 本体は渡せない（渡すと `COLLECTION_ERROR`） |
+| `test.setTimeout(ms)` / `test.slow()` | 実行中のテスト（または `beforeEach` / `beforeAll`）のタイムアウトを変更・3 倍にする | `afterEach` や後片付けからは呼べない |
+
+タグで絞って実行してみます。
+
+```bash
+npx e2e run tests/04-test-structure --tag smoke
+```
+
+```text
+ ✓ |web| tests/04-test-structure/structure.e2e.ts (1 test)
+   ✓ todos page > starts empty
+      Tests  1 passed (1)
+```
+
+`--tag` は複数指定でき（`--tag smoke,todos` はどちらか）、`--exclude-tag` で除外もできます。[第 06 章](/chapters/06-agent-steps/)以降では、モデルを使うテストに `agent` タグを付けて、CI で除外する使い方をします。
+
+### 3. 順番に続ける `serial` と、ファイル内並列の `parallel`
+
+既定では、**同じファイル内のテストは 1 つのワーカー上で宣言順に**動き、複数ファイルがあるときに別ワーカーへ並列配分されます。各テストは新しいブラウザコンテキストで始まるため互いに独立しています。
+
+「前のテストの続きから」画面状態を引き継ぎたいときだけ `serial: true` を使います。
+
+```ts
+describe('a flow across tests', { serial: true }, () => {
+  test('adds a todo', async ({ app, screen }) => {
+    await app.open('/todos');
+    await screen.getByLabel('New todo').fill('Carry over');
+    await screen.getByRole('button', 'Add').tap();
+    await expect(screen.getByRole('status')).toHaveText('1 remaining');
+  });
+
+  test('still sees it', async ({ screen }) => {
+    // serial グループでは前のテストの画面がそのまま残る（app.open しない）
+    await expect(screen.getByRole('checkbox', 'Carry over')).toBeVisible();
+    await screen.getByRole('checkbox', 'Carry over').check();
+    await expect(screen.getByRole('status')).toHaveText('0 remaining');
+  });
+});
+```
+
+**観察ポイント**: 2 つ目のテストは `app.open` していないのに todo が見えます。`serial` グループは 1 つのブラウザを共有し、宣言順に動き、1 つ失敗すると残りはスキップされ、再試行もグループ単位です。独立したテストにできるならそちらを優先してください。
+
+逆に、**同じファイル内の独立したテストも複数ワーカーで並列に走らせたい**ときは、`parallel: true` を使います。
+
+```ts
+// グループ単位で並列化
+describe('independent views', { parallel: true }, () => {
+  test('opens home', async ({ app, screen }) => {
+    await app.open('/');
+    await expect(screen.getByRole('main')).toBeVisible();
+  });
+
+  test('opens todos', async ({ app, screen }) => {
+    await app.open('/todos');
+    await expect(screen.getByRole('heading', 'Todos')).toBeVisible();
+  });
+});
+
+// ファイル全体を並列化したい場合はファイル先頭で呼ぶ
+// describe.configure({ parallel: true });
+```
+
+プロジェクト全体の全ファイルを並列化したい場合は、`e2e.config.ts` に `fullyParallel: true` を設定します（その中で特定ファイルだけ順次に戻したいときは `describe.configure({ parallel: false })` を使います）。
+
+出力に `suite starts on web` が複数回出たことに気付きましたか。`serial` グループやリトライ、並列バッチではファイルを読み込み直すため、`beforeAll` がそのたびに動きます。`beforeAll` に「プロセス全体で 1 回しか動かしてはいけない処理」を置かない理由の 1 つです。
+
+### 4. 自分の道具を作る: `test.extend`
+
+「todo が 3 件ある状態から始めたい」テストが何本もあるとします。毎回 `beforeEach` に書く代わりに、**フィクスチャ**として定義します。`tests/04-test-structure/fixtures.ts` を作ります（`.e2e.ts` ではないので、テストとしては拾われません）。
+
+```ts
+// tests/04-test-structure/fixtures.ts
+import { test as base } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+type TodoFixtures = {
+  seeded: string[];
+  firstSeeded: string;
+  auditLog: void;
+};
+
+type WorkerShared = {
+  runLabel: string;
+};
+
+/** 画面から todo を 3 件追加した状態で始まる test。 */
+export const seededTest = base.extend<TodoFixtures, WorkerShared>({
+  // 1. テストスコープのフィクスチャ（必要なテストでだけ動く）
+  seeded: async ({ app, screen }, use) => {
+    const titles = ['Buy milk', 'Walk the dog', 'Write the report'];
+    await app.open('/todos');
+    for (const title of titles) {
+      await screen.getByLabel('New todo').fill(title);
+      await screen.getByRole('button', 'Add').tap();
+    }
+    await expect(screen.getByRole('status')).toHaveText(`${titles.length} remaining`);
+
+    await use(titles); // ここでテスト本体が動く
+
+    console.log('seeded fixture: teardown'); // 本体が失敗しても動く
+  },
+
+  // 2. 同じ extend() 内で宣言した別フィクスチャを直接参照できる（順序不問）
+  firstSeeded: async ({ seeded }, use) => {
+    await use(seeded[0]);
+  },
+
+  // 3. 引数に書かれなくても毎回動かしたい副作用フィクスチャは auto: true を付ける
+  auditLog: [
+    async ({}, use) => {
+      console.log('test attempt starting');
+      await use();
+    },
+    { auto: true },
+  ],
+
+  // 4. ワーカー×ターゲットごとに 1 回だけ準備し、ワーカー終了時に片付ける worker フィクスチャ
+  runLabel: [
+    async ({ platform }, use) => {
+      const label = `worker-${platform}-${Date.now()}`;
+      await use(label);
+    },
+    { scope: 'worker' },
+  ],
+});
+```
+
+[第 00 章](/chapters/00-typescript-basics/)で触れた「型を書く」場面がここです。`base.extend<TestFixtures, WorkerFixtures>` の第 1 型引数がテストスコープ、第 2 型引数が worker スコープの型宣言です。
+
+使う側は `tests/04-test-structure/fixtures.e2e.ts` です。
+
+```ts
+// tests/04-test-structure/fixtures.e2e.ts
+import { expect } from 'e2e';
+import { seededTest as test } from './fixtures';
+
+// beforeAll は worker スコープの自作フィクスチャ（runLabel）を受け取れる
+test.beforeAll(async ({ runLabel }) => {
+  console.log('using worker fixture:', runLabel);
+});
+
+test('completes one of the seeded todos', async ({ screen, seeded }) => {
+  await screen.getByRole('checkbox', seeded[1]).check();
+  await expect(screen.getByRole('status')).toHaveText('2 remaining');
+});
+
+test('checks the first seeded todo', async ({ screen, firstSeeded }) => {
+  await expect(screen.getByRole('checkbox', firstSeeded)).toBeVisible();
+});
+
+// seeded を引数に書いていないため、このテストでは seeded のセットアップは一切走らない
+test('does not run seeded when unused', async ({ app, screen }) => {
+  await app.open('/todos');
+  await expect(screen.getByRole('status')).toHaveText('0 remaining');
+});
+```
+
+**観察ポイント（重要なルール）**
+
+1. **オンデマンド（遅延）実行**: フィクスチャは、テスト本体・`beforeEach` / `afterEach`・他のフィクスチャのいずれかが**引数に明示したものだけ**が実行されます。`does not run seeded when unused` では `seeded` が動かないため、1 つの `fixtures.ts` にスイート全体のフィクスチャを安心して集約できます。
+2. **`auto: true` による常時実行**: テストが値を参照しないけれど毎回動かしたい処理（ログ記録やデータリセットなど）は、`[fn, { auto: true }]` で登録します。`{ scope: 'worker', auto: true }` と組み合わせればワーカーごとに 1 回自動実行されます。
+3. **厳格な分割代入（Strict destructuring）**: e2e は関数のソースコードから第 1 引数の分割代入を読み取って「どのフィクスチャが必要か」を判定します。そのため `async (fixtures) => {}`、`async (_, use) => {}`、レスト構文 `async ({ app, ...rest }) => {}` はファイル収集時に **`COLLECTION_ERROR`** になります。他のフィクスチャを 1 つも使わない定義は `async ({}, use) => {}` と空の分割代入で書きます。
+4. **同一 `extend()` 内の相互参照**: `firstSeeded` が同じ `extend()` 内の `seeded` を参照しているように、同じ `test.extend()` で並べたフィクスチャ同士を順序を問わず参照できます（依存順にセットアップされ、逆順に後片付けされます）。
+5. **worker スコープの分離**: `{ scope: 'worker' }` のフィクスチャはワーカー×ターゲットごとに 1 回だけ準備され、ワーカー終了時に後片付けされます。`beforeAll` / `afterAll` からも受け取れます。テストスコープのフィクスチャ（Web の `app` / `screen` / `browser` など）を worker フィクスチャや `beforeAll` で参照すると `COLLECTION_ERROR` になります。また、worker フィクスチャはテストファイル本体ではなく `fixtures.ts` のような共有モジュールに定義してください。
+6. **既存フィクスチャの拡張**: `app` や `browser` など既存のフィクスチャ名で上書き定義すると、既存の前後をラップできます。ただし**元の `scope` や `auto` は引き継がれません**（オプションを省くと非 auto の test フィクスチャになります）。worker スコープのまま拡張したい場合は `{ scope: 'worker' }` を明示してください。
+
+[第 09 章](/chapters/09-authentication/)では、ログイン済みの状態を「セッション」として保存して使い回す、もっと速い方法を学びます。画面を通してデータを作るフィクスチャは、API やセッション保存が使えないときの手段です。
+
+### 完成形
+
+```bash
+npx e2e run tests/04-test-structure
+```
+
+```text
+ ✓ |web| tests/04-test-structure/fixtures.e2e.ts (3 tests)
+ ✓ |web| tests/04-test-structure/structure.e2e.ts (10 tests | 3 skipped)
+```
+
+## 読む
+
+- [test リファレンス](https://e2e.com/docs/reference/test): 「Members」「Hooks」「Options」「Fixtures」「Your own fixtures」「Worker fixtures」の節。
+- [Writing fixtures ガイド](https://e2e.com/docs/fixtures): フィクスチャの設計パターン全般。
+- オフライン参照・CLI 補足: `node_modules/e2e/docs/reference/test.mdx`、`node_modules/e2e/docs/fixtures.mdx`、`npx e2e guide writing-tests` の「Registration」「Fixtures」の節も参照できます。
+
+## 自分の言葉で書き直す
+
+`tests/04-test-structure/ambiguous.e2e.ts` を作り、次を満たすテストを書いてください。
+
+1. `describe('ambiguous page', { tags: ['ambiguous'] }, ...)` でまとめ、`beforeEach` で `/ambiguous` を開く。
+2. テスト 1: Drafts 側の Delete を押し、`status` が "Deleted the draft" になる。
+3. テスト 2: Published 側の Delete を押し、`status` が "Deleted the published post" になる。
+4. `afterEach` でスクリーンショットを撮る。
+
+`npx e2e run tests/04-test-structure --tag ambiguous` で 2 つだけ走れば合格です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `COLLECTION_ERROR`（分割代入エラー） | `async (fixtures) => {}`、`(_, use)`、`{ app, ...rest }` と書いた | 必ず分割代入で書く。引数不要なら `async ({}, use) => {}` |
+| `COLLECTION_ERROR`（`describe` の本体） | `describe(..., async () => {})` と書いた | `describe` の本体は同期。`async` を外す |
+| `COLLECTION_ERROR`（`beforeAll` や worker フィクスチャ） | Web で test スコープの `app` / `screen` / `browser` を `beforeAll` に書いた | UI 準備は `beforeEach` か test フィクスチャに移す |
+| `COLLECTION_ERROR`（未知のオプションキー `requires`） | 旧バージョンの `{ requires: ['browser'] }` を書いた | `{ platforms: ['web'] }` に書き換える |
+| 自作フィクスチャが動かない | テストの引数で分割代入しておらず、`auto: true` も付いていない | テスト引数に書くか、`[fn, { auto: true }]` にする |
+| `TEST_SETUP_FAILED`: `use` が呼ばれていない | フィクスチャ関数が `await use(...)` を通らずに終わった | 必ず 1 回だけ `await use(...)` を呼ぶ |
+| `serial` の 2 つ目以降が `skipped` | 前のメンバーが失敗した | 最初の失敗を直す。再試行はグループ単位 |
+
+## まとめ
+
+- `describe` でまとめ、`beforeEach` / `afterEach` で毎回の準備と片付け。`beforeAll` / `afterAll` は `platform` や worker フィクスチャを受け取る。
+- `tags`、`platforms`、`timeout`、`test.skip` / `test.fixme` / `test.todo`、`test.setTimeout` / `test.slow`、`serial` / `parallel` を使い分ける。
+- `test.extend` のフィクスチャは**オンデマンド実行**かつ**厳格な分割代入**が必須。常時実行は `{ auto: true }`、ワーカー共有は `{ scope: 'worker' }`、引数不要は `({}, use)`。
+
+次の[第 05 章: app と browser](/chapters/05-app-and-browser/)では、`app` と `browser` という 2 つのフィクスチャを掘り下げ、ブラウザの設定と、アプリを「どこで動かすか」の切り替えを扱います。

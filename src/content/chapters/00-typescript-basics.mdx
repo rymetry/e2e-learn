@@ -1,0 +1,217 @@
+---
+chapterNumber: "00"
+order: 0
+part: "part-1"
+title: "テストコードを読むための最小限の TypeScript"
+summary: "e2e のテストコードに登場する 5 つの構文（import、オブジェクトと配列、分割代入、async/await、テンプレート文字列とアロー関数）を Node.js だけで動かして読めるようにします。"
+modelRequirement: "none"
+estimatedMinutes: 15
+e2eVersion: "0.25.0"
+webVersion: "0.17.0"
+prerequisites:
+  - "Node.js 24.8 以上（または 22.22.3 以上）"
+solutionFiles:
+  - filename: "06-exercise.mjs"
+    lang: "js"
+    sourcePath: "00-typescript-basics/06-exercise.mjs"
+---
+
+## この章で分かること
+
+> TypeScript をすでに読み書きできる方は、この章をスキップして[環境セットアップ](/setup/)と[第 01 章: セットアップと初回実行](/chapters/01-setup-and-first-run/)へ直接進んで構いません。
+
+- この教材のテストコードに出てくる構文は 5 種類しかありません。それを「読める」ようになります。
+- 言語の全体像は扱いません。ここで出てこない構文は、必要になった章で説明します。
+- TypeScript を少し触ったことがある人は、最後の「自分の言葉で書き直す」だけ解いて次へ進んでも構いません。
+
+## 前提
+
+- Node.js 24.8 以上（`node --version` で確認。Node.js 22 を使う場合は 22.22.3 以上）。
+- モデルもブラウザも不要です。この章のコードは `node` だけで動きます。
+
+まだ作業用ディレクトリを作っていない場合は、手元に `my-e2e-hands-on` を作って中で作業します（[環境セットアップ](/setup/)でも同じディレクトリを使います）。
+
+```bash
+mkdir -p my-e2e-hands-on/basics
+cd my-e2e-hands-on
+```
+
+## 一緒に書く
+
+この教材で最初に書くテストは、こんな形をしています。今は読めなくて構いません。この章を終えると、1 行ずつ意味が分かるようになります。
+
+```ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('app opens', async ({ app, browser }) => {
+  await app.open('/');
+  await expect(browser.locator('body')).toBeVisible();
+});
+```
+
+### 1. `import`: 他のファイルやパッケージから部品を借りる
+
+`basics/01-import.mjs` を作ります（この章だけ、外部依存の無い `.mjs` ファイルで試します）。
+
+```js
+// basics/01-import.mjs
+import { join } from 'node:path';
+
+console.log(join('tests', '01-setup-and-first-run'));
+```
+
+実行します。
+
+```bash
+node basics/01-import.mjs
+```
+
+**観察ポイント**: `tests/01-setup-and-first-run` と出ます。`join` という関数は自分で書いていません。`node:path` という標準モジュールが持っている関数を、`import { join } from '...'` で借りてきています。波括弧 `{ }` の中に、借りたい部品の名前を書きます。
+
+テストの先頭 2 行は、`@e2e-dev/web` から `test` を、`e2e` から `expect` を借りている、という意味です。
+
+### 2. オブジェクトと配列: 値をまとめる
+
+`basics/02-objects.mjs` を作って実行します。
+
+```js
+// basics/02-objects.mjs
+const todo = { id: 1, title: 'Buy milk', done: false };
+console.log(todo.title);        // ドットで取り出す
+console.log(todo['title']);     // 角括弧でも同じ
+
+const todos = [todo, { id: 2, title: 'Walk the dog', done: true }];
+console.log(todos.length);      // 2
+console.log(todos[1].title);    // 配列は 0 から数える
+```
+
+```bash
+node basics/02-objects.mjs
+```
+
+**観察ポイント**: `{ キー: 値, ... }` がオブジェクト、`[ 値, 値, ... ]` が配列です。API が返す JSON はこの形で届きます。
+
+### 3. 分割代入: オブジェクトから必要なものだけ取り出す
+
+`basics/03-destructuring.mjs` を作って実行します。
+
+```js
+// basics/03-destructuring.mjs
+const fixtures = { app: 'App', browser: 'Browser', screen: 'Screen' };
+
+const { app, browser } = fixtures;   // app と browser だけ取り出す
+console.log(app, browser);
+
+function run({ app, screen }) {       // 引数でも同じことができる
+  console.log('run with', app, screen);
+}
+run(fixtures);
+```
+
+```bash
+node basics/03-destructuring.mjs
+```
+
+**観察ポイント**: `const { app, browser } = fixtures` は `const app = fixtures.app; const browser = fixtures.browser;` の省略形です。
+
+テストの `async ({ app, browser }) => { ... }` は、e2e が渡してくる道具箱（フィクスチャと呼びます）から `app` と `browser` だけ取り出している、という意味です。なお e2e では、この分割代入の書き方を見て「どのフィクスチャを準備するか」を判定しています（[第 04 章](/chapters/04-test-structure/)で詳しく扱います）。
+
+### 4. `async` / `await`: 時間のかかる処理を待つ
+
+ブラウザを開く、ページを読み込む、要素が出るのを待つ。テストの操作はほとんど「時間がかかる」ものです。`basics/04-async.mjs` を作って実行します。
+
+```js
+// basics/04-async.mjs
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function main() {
+  console.log('start');
+  await wait(500);          // ここで 0.5 秒止まる
+  console.log('after 0.5s');
+  await wait(500);
+  console.log('after 1.0s');
+}
+
+main();
+```
+
+```bash
+node basics/04-async.mjs
+```
+
+**観察ポイント**: 3 行が 0.5 秒ずつ間を空けて出ます。`await` を書き忘れるとどうなるか試してください。`await wait(500)` の `await` を消して実行すると、3 行が一瞬で出ます。待たずに次へ進んでしまったからです。
+
+ルールは 2 つだけです。
+
+- 時間のかかる処理（`app.open`、`expect(...)`、`agent.act` など）には `await` を付ける。
+- `await` を使う関数には `async` を付ける。テストの `async ({ app }) => {}` の `async` はそのためです。
+
+### 5. テンプレート文字列とアロー関数
+
+`basics/05-template-and-arrow.mjs` を作って実行します。
+
+```js
+// basics/05-template-and-arrow.mjs
+const name = 'alice';
+console.log(`Signed in as ${name}`);   // バッククォートの中で ${ } が展開される
+
+const double = (n) => n * 2;           // アロー関数。function double(n) { return n * 2; } と同じ
+console.log(double(21));
+
+const greet = async (who) => {         // async も付けられる
+  return `hello, ${who}`;
+};
+console.log(await greet('world'));     // .mjs ではトップレベルでも await が書ける
+```
+
+```bash
+node basics/05-template-and-arrow.mjs
+```
+
+**観察ポイント**: テストの本体 `async ({ app, browser }) => { ... }` はアロー関数です。`test('app opens', 関数)` のように、関数をそのまま別の関数に渡しています。
+
+### TypeScript と JavaScript の違いは 1 つだけ覚える
+
+この章は `.mjs`（JavaScript）で書きました。教材の本体は `.ts`（TypeScript）です。違いは**型を書ける**ことです。
+
+```ts
+const title: string = 'Buy milk';         // title は文字列、と宣言
+function add(a: number, b: number): number { return a + b; }
+```
+
+e2e のテストでは、型はほとんど自動で付きます。`{ app, browser }` と書けば、`app` に何ができるかエディタが教えてくれます。自分で型を書くのは、[第 04 章](/chapters/04-test-structure/)で自作フィクスチャを作るときと、[第 10 章](/chapters/10-api-testing/)で API の形を宣言するときくらいです。
+
+## 読む
+
+この章に対応する e2e のドキュメントはありません。TypeScript そのものを体系的に知りたくなったら、公式ハンドブックの [TypeScript for JavaScript Programmers](https://www.typescriptlang.org/docs/handbook/typescript-in-5-minutes.html) が短くてよい入口です。
+
+## 自分の言葉で書き直す
+
+`basics/06-exercise.mjs` を作り、次を満たすコードを書いてください。
+
+1. `const user = { name: 'alice', plan: 'Free' }` から分割代入で `name` と `plan` を取り出す。
+2. `wait(300)` のような待つ関数を作り、`async` 関数の中で 2 回 `await` する。
+3. 最後に `` `${name} is on the ${plan} plan` `` を表示する。
+
+`node basics/06-exercise.mjs` を実行して `alice is on the Free plan` が出れば合格です。詰まったらページ下部の『模範解答を見る』を開いて確認してください。
+
+## よくある失敗
+
+| 症状 | 原因 | 直し方 |
+| --- | --- | --- |
+| `SyntaxError: Cannot use import statement outside a module` | `.js` で `import` を使った | 拡張子を `.mjs` にする（教材本体の `.ts` では不要） |
+| `await is only valid in async functions` | `async` の無い関数の中で `await` した | その関数に `async` を付ける |
+| `Cannot read properties of undefined` | 存在しないキーを取り出した（`todo.titel` など） | キーの綴りを確認する |
+| 待つはずの処理が一瞬で終わる | `await` の付け忘れ | 時間のかかる呼び出しに `await` を付ける |
+
+## まとめ
+
+- `import { 名前 } from 'パッケージ'` で部品を借りる。
+- `{ キー: 値 }` がオブジェクト、`[ ... ]` が配列、`const { a, b } = obj` が分割代入。
+- 時間のかかる処理には `await`、`await` を使う関数には `async`。
+- `` `...${式}...` `` がテンプレート文字列、`(引数) => 本体` がアロー関数。
+
+次は[環境セットアップ](/setup/)で `my-e2e-hands-on/` に `e2e` を導入し、[第 01 章: セットアップと初回実行](/chapters/01-setup-and-first-run/)へ進みましょう。
