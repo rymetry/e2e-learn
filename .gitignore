@@ -5,6 +5,8 @@ node_modules/
 dist/
 build/
 out/
+.astro/
+.wrangler/
 .next/
 .nuxt/
 .output/

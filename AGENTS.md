@@ -1,15 +1,17 @@
 # Agent Context
 
-<!-- プロジェクト概要をここに記載してください。 -->
+**e2e Zero to Hero**（`rymetry/e2e-learn`）は、e2e inc. が提供するエージェント型 E2E テストフレームワーク `e2e`（`e2e@0.25.0` / `@e2e-dev/web@0.17.0` 基準）をゼロから実務レベルまで学べる日本語ハンズオンサイトです。Astro（完全 SSG）+ Tailwind CSS v4 + Pagefind で構築し、Cloudflare Workers Static Assets へ配信します。
 
 ## コマンド
 
-<!-- プロジェクトで使うコマンドを記載してください。例:
-- Build: `...`
-- Test: `...`
-- Lint: `...`
-- Mutation: `pnpm exec mutator --since origin/main`
--->
+- Dev: `pnpm dev`（`astro dev`）
+- Build: `pnpm build`（`astro build && pagefind --site dist`）
+- Preview (Workers ローカル): `pnpm preview`（`wrangler dev`）
+- Deploy (手動): `pnpm cf:deploy`（`wrangler deploy`）
+- Check (型・Astro・Biome): `pnpm check`（`astro check && biome check .`）
+- Test (Vitest 5): `pnpm test`（`vitest run`）
+- Mutation: `pnpm mutate`（`mutator --since origin/main`）
+- Release diff (上流 `e2e-inc/e2e` 差分確認): `pnpm release:diff`（ロック更新は `pnpm release:diff -- --update <tag>`）
 
 ## ルール
 
@@ -18,6 +20,7 @@
 - ドキュメント、コメント、返答は日本語で書く。識別子とテスト名は英語にする。
 - 冗長にしない。人が読みやすく、AI が判断に迷わない粒度にとどめる。
 - 検証結果には確認できた根拠を添える。未確認の点は未確認と明記する。
+- サイト生成 HTML・`<title>`・UI コピーには em ダッシュ（`—`）およびスペース付き en ダッシュ（` – `）を使わない。MDX の見出しは Setext 形式（`=======`）を禁止し ATX 見出し（`##`, `###`）のみを使う。
 
 ### コーディング
 
@@ -46,4 +49,4 @@
 ## 構成
 
 - スキルの正本は `.agents/skills/`、hook の正本は `.agents/hooks/` に置く。
-- 前提のプラグインと対応エージェントは [README.md](README.md) を参照する。
+- サイト構成の詳細は [docs/architecture/overview.md](docs/architecture/overview.md) と [README.md](README.md) を参照する。

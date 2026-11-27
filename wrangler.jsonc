@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "e2e-learn",
+  "compatibility_date": "2026-11-27",
+  "workers_dev": true,
+  "preview_urls": true,
+  "previews": {},
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

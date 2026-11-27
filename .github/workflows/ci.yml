@@ -29,3 +29,6 @@ jobs:
       # .agents/skills/ の写しが、インストール済みのパッケージに同梱されたスキルと同じであること。
       # Dependabot の更新 PR では自動で写し直される。手元で直すときは --check を外して実行する。
       - run: bash .github/scripts/sync-skills.sh --check
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm build
